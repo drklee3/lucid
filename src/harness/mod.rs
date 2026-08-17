@@ -192,6 +192,13 @@ fn apply_telemetry(
     match kind {
         HarnessKind::ClaudeCode => {
             cmd.env("CLAUDE_CODE_ENABLE_TELEMETRY", "1")
+                // Distributed tracing (spans) is a separate, off-by-default beta
+                // signal from logs/metrics — `CLAUDE_CODE_ENABLE_TELEMETRY` alone
+                // does not turn it on. Without both of these, `trace_link`'s URL
+                // points at spans that were never exported. Source:
+                // https://code.claude.com/docs/en/monitoring-usage
+                .env("CLAUDE_CODE_ENHANCED_TELEMETRY_BETA", "1")
+                .env("OTEL_TRACES_EXPORTER", "otlp")
                 .env("OTEL_LOGS_EXPORTER", "otlp")
                 .env("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
                 .env("OTEL_EXPORTER_OTLP_ENDPOINT", &telemetry.otlp_endpoint)
