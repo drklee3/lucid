@@ -1,0 +1,18 @@
+# Is the Proactive-PM Layer Genuinely Novel?
+
+**Verdict: essentially yes, with one small caveat.** Across every facet searched — orchestration platforms, PM-agent products, and the practitioner/critique literature — no mature, well-adopted system does what lucid's [PM agent](../architecture/pm-scope.md) does: investigating a repo on its own initiative (no ticket, no alert, no human-supplied seed) and originating new work-item proposals grounded in gap analysis.
+
+## Where existing coverage stops
+
+- Every flagship commercial issue-to-PR system (Symphony, Linear Coding Sessions, Copilot coding agent, Cursor background agents, Factory Missions, Devin — see [prior-art landscape](prior-art-landscape.md)) requires an external trigger — manual assignment, @-mention, webhook, or scheduled rule — and its output is tied to a pre-existing ticket.
+- The closest things to proactivity in that landscape are scope-expansion *within* an assigned task (Devin fixing an unrelated issue while doing its assigned work) and reacting to a *non-human* but still external signal — a monitoring alert or production error becoming the "ticket" (reported secondhand, unconfirmed). Both are still reactive to something, just not a human-written ticket.
+- A 2026 arXiv paper ("Agentic Coding Needs Proactivity, Not Just Autonomy") makes this gap explicit at the research level: the field conflates autonomy (unsupervised execution of a given task) with proactivity (deciding a task should exist), and no accepted evaluation framework exists yet for judging whether a self-initiated suggestion is useful. Its claim that virtually all production systems are "autonomous but reactive" matches this survey directly.
+- **GitAgents** (gitagents.dev) is the one credible near-match — its "Feature Suggestion Agent" analyzes a codebase for improvement opportunities and its "Bug Detection Agent" runs after every push (not on a ticket) to file GitHub issues for architectural flaws. The only found example of unprompted origination filed for human review. But it's a small, single-page commercial product with no visible community adoption, GitHub stars, or independent reviews — treat as an unverified vendor claim, not proof the space is solved.
+- Linear — the tracker most likely to have shipped something here given how tracker-native its agent features are — explicitly states in its own 2026 roadmap that deciding *what* to build is a human judgment call the tooling deliberately does not automate. A direct sourced statement that idea-origination is out of scope by design, not merely an absence of evidence.
+- No open-source project was found doing unprompted codebase-gap-analysis-to-filed-issue work; the open-source ecosystem in this space (Backlog.md, PM prompt libraries, etc.) is entirely task-management scaffolding for executing a plan a human already supplied.
+
+## Conclusion
+
+If a genuine category-(c) proactive-PM agent is wanted, the honest framing is "build it," not "adopt it" — there is no mature open-source or well-adopted commercial project to fork or integrate, and the one small startup doing something adjacent (GitAgents) has not been independently verified. This is the direct grounding for why lucid exists as a build, not an integration.
+
+Source: `docs/research.md` § Is the Proactive-PM Layer Genuinely Novel?

@@ -1,0 +1,44 @@
+//! Reference [`PresenceSource`] implementation: `systemd-logind` over D-Bus.
+//!
+//! Watches `org.freedesktop.login1.Session` for `Lock`/`Unlock` signals and reads
+//! `IdleHint`/`IdleSinceHint`. Correct on a real Linux desktop.
+//!
+//! **Known gap, logged in docs/design.md (resolved decision #1):** on WSL2 this
+//! machine's `IdleHint` is stuck at `true` — there's no real "seat" with physical
+//! input devices behind a WSL2 pty session, so nothing ever resets it. That doesn't
+//! block building this source (it's still the correct reference implementation for
+//! a normal Linux desktop), it just means this source alone is insufficient for
+//! presence-gated autonomy *on this machine* until a second source is added to the
+//! list. Real D-Bus wiring (a `zbus`-backed connection, signal subscription) is not
+//! implemented yet — this is the shape, not the behavior.
+
+use super::PresenceSource;
+use std::time::Duration;
+
+pub struct LogindSource {
+    // Real implementation holds a zbus::Connection + the session object path.
+    // Left unconstructed here — see module doc.
+}
+
+impl LogindSource {
+    pub fn new() -> anyhow::Result<Self> {
+        // TODO: connect to the system bus, resolve the current session via
+        // org.freedesktop.login1.Manager.GetSessionByPID, subscribe to
+        // Lock/Unlock signals.
+        Ok(Self {})
+    }
+}
+
+impl PresenceSource for LogindSource {
+    fn name(&self) -> &str {
+        "logind"
+    }
+
+    fn is_idle(&self) -> bool {
+        todo!("read IdleHint over D-Bus")
+    }
+
+    fn idle_since(&self) -> Option<Duration> {
+        todo!("read IdleSinceHint over D-Bus")
+    }
+}

@@ -1,0 +1,17 @@
+/target
+
+# local runtime state (sqlite db, mode file, logs) — not part of the repo
+/state/
+*.db
+*.db-shm
+*.db-wal
+
+# secrets
+.env
+.env.*
+
+# editor/OS cruft
+.vscode/
+.idea/
+*.swp
+.DS_Store
