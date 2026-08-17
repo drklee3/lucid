@@ -3,7 +3,7 @@
 //! Watches `org.freedesktop.login1.Session` for `Lock`/`Unlock` signals and reads
 //! `IdleHint`/`IdleSinceHint`. Correct on a real Linux desktop.
 //!
-//! **Known gap, logged in docs/design.md (resolved decision #1):** on WSL2 this
+//! **Known gap, see docs/wiki/architecture/presence-detection.md:** on WSL2 this
 //! machine's `IdleHint` is stuck at `true` — there's no real "seat" with physical
 //! input devices behind a WSL2 pty session, so nothing ever resets it. That doesn't
 //! block building this source (it's still the correct reference implementation for
@@ -24,6 +24,9 @@ pub struct LogindSource {
 }
 
 impl LogindSource {
+    /// # Errors
+    /// The real implementation will fail if the system D-Bus can't be reached or
+    /// no session can be resolved for the current process; the stub never errors.
     pub fn new() -> anyhow::Result<Self> {
         // TODO: connect to the system bus, resolve the current session via
         // org.freedesktop.login1.Manager.GetSessionByPID, subscribe to
@@ -34,7 +37,7 @@ impl LogindSource {
 
 #[async_trait]
 impl PresenceSource for LogindSource {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "logind"
     }
 

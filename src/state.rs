@@ -1,14 +1,14 @@
 //! Worker and orchestration state machines.
 //!
 //! Exhaustive `match` on these enums is the whole point of choosing Rust for this
-//! project (see docs/design.md, "Implementation language: Rust") — adding a state
-//! and forgetting to handle it somewhere becomes a compile error, not a live bug
-//! discovered the way OpenHands', cyrus's, and Symphony's own state gaps were.
+//! project (see docs/wiki/architecture/tech-stack.md) — adding a state and
+//! forgetting to handle it somewhere becomes a compile error, not a live bug
+//! discovered the way `OpenHands`', cyrus's, and Symphony's own state gaps were.
 
 use chrono::{DateTime, Utc};
 
 /// Orchestration state, separate from whatever the tracker calls its own statuses
-/// (Symphony's pattern — design.md, "Symphony SPEC.md" section).
+/// (Symphony's pattern — see docs/wiki/architecture/symphony-patterns.md).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClaimState {
     Unclaimed,
@@ -23,13 +23,13 @@ pub enum ClaimedSubstate {
 }
 
 /// Per-run Worker phase. Symphony's eleven phases, plus two states nothing surveyed
-/// had (design.md, "UX / State-Machine Gap Analysis" — State machine section):
+/// had (see docs/wiki/architecture/state-machine-gaps.md):
 ///
 /// - `AwaitingHumanInput`: the Worker paused mid-task to ask a clarifying question
 ///   (Linear Agent Sessions' `awaitingInput`/`elicitation` pattern — we had no
 ///   equivalent before this).
 /// - `Stuck`: detected unproductive looping (busywork, not silence) — distinct from
-///   `Stalled`, which is purely `elapsed_ms > stall_timeout_ms`. OpenHands has this
+///   `Stalled`, which is purely `elapsed_ms > stall_timeout_ms`. `OpenHands` has this
 ///   as a first-class state; Symphony does not. The *detection logic* for this is
 ///   explicitly not designed yet (docs/FEATURES.md, Deferred) — only the state
 ///   exists so far.
@@ -53,6 +53,7 @@ pub enum WorkerPhase {
 impl WorkerPhase {
     /// A run is done once it lands in one of these — no further reconciliation-tick
     /// work applies to it beyond cleanup.
+    #[must_use]
     pub fn is_terminal(self) -> bool {
         matches!(
             self,
@@ -63,9 +64,11 @@ impl WorkerPhase {
         )
     }
 
-    /// Symphony's "parked state stops polling" rule (design.md gap analysis),
-    /// made explicit here rather than left implicit: once a Worker needs a human,
-    /// the reconciliation tick should stop actively dispatching/polling it.
+    /// Symphony's "parked state stops polling" rule (see
+    /// docs/wiki/architecture/state-machine-gaps.md), made explicit here rather
+    /// than left implicit: once a Worker needs a human, the reconciliation tick
+    /// should stop actively dispatching/polling it.
+    #[must_use]
     pub fn is_parked_for_human(self) -> bool {
         matches!(self, WorkerPhase::AwaitingHumanInput)
     }
@@ -78,6 +81,11 @@ pub struct WorkerRun {
     pub claim: ClaimState,
     pub phase: WorkerPhase,
     pub session_id: Option<String>,
+    /// Correlation id for the dispatch attempt behind this run — the same value
+    /// tagged onto the harness's `OTel` traces via `lucid.dispatch_id`. A fresh id
+    /// per attempt, so retries stay distinguishable in the trace store (see
+    /// docs/wiki/architecture/trace-correlation.md).
+    pub dispatch_id: Option<String>,
     pub retries: u32,
     pub last_event_at: DateTime<Utc>,
     pub last_error: Option<String>,

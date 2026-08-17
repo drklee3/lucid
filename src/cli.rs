@@ -61,6 +61,8 @@ pub enum PmCommand {
         respect_presence: bool,
         #[arg(long)]
         dry_run: bool,
+        #[arg(long)]
+        config: Option<PathBuf>,
     },
 }
 
@@ -70,9 +72,15 @@ pub enum PresenceCommand {
     Status {
         #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
         format: OutputFormat,
+        #[arg(long)]
+        config: Option<PathBuf>,
     },
     /// Force or clear the presence override
-    Override { mode: PresenceOverrideMode },
+    Override {
+        mode: PresenceOverrideMode,
+        #[arg(long)]
+        config: Option<PathBuf>,
+    },
 }
 
 #[derive(ValueEnum, Debug, Clone, Copy)]

@@ -1,27 +1,27 @@
 # Features
 
-Scoped units of work, organized by component. Traces to `docs/design.md`'s resolved
-decisions — nothing here should be new scope. Deferred items are listed separately
-and are explicitly out of v1.
+Scoped units of work, organized by component. Traces to the decisions recorded in
+`docs/wiki/architecture/` — nothing here should be new scope. Deferred items are
+listed separately and are explicitly out of v1.
 
 ## Presence
 
-- [ ] `PresenceSource` trait: `is_idle(&self) -> bool`, `idle_since(&self) -> Option<Duration>`
-- [ ] Explicit override: a state file (`state/mode`) toggled by an explicit command, always wins over automatic sources, no debounce
-- [ ] `logind` D-Bus source (`Lock`/`Unlock` signals, `IdleHint`/`IdleSinceHint`) via `zbus` — reference implementation
+- [x] `PresenceSource` trait: `is_idle(&self) -> bool`, `idle_since(&self) -> Option<Duration>`
+- [x] Explicit override: a state file (default `$XDG_STATE_HOME/lucid/presence-override`) toggled by `lucid presence override`, always wins over automatic sources, no debounce (`src/presence/override_file.rs`)
+- [ ] `logind` D-Bus source (`Lock`/`Unlock` signals, `IdleHint`/`IdleSinceHint`) via `zbus` — shape exists (`src/presence/logind.rs`), the actual D-Bus read is still `todo!()`; the daemon runs with an empty source list until this lands (conservative — see `main.rs::default_presence_sources`)
 - [ ] Last-activity source: reads local agent session logs (Hermes, Claude Code, whatever's present) so an actively-driven interactive session blocks the autonomous flip even if the screen looks idle
-- [ ] Source composition: any source reporting "not idle" wins — conservative default, additive when more sources are added later
-- [ ] Debounce: idle must sustain past the full threshold (default 20 min), not just cross it, before flipping to autonomous
+- [x] Source composition: any source reporting "not idle" wins — conservative default, additive when more sources are added later
+- [x] Debounce: idle must sustain past the full threshold (default 20 min), not just cross it, before flipping to autonomous (`presence::resolve`)
 - [ ] Mode-transition audit log — every flip is logged (trust-critical, needs an audit trail)
 
 ## PM / gap-detection
 
-- [ ] Watermark record (repo file or tracker-side): last commit SHA reviewed, last wake timestamp, proposals-filed-this-week count
-- [ ] Wake procedure: `git log <watermark>..HEAD` (bounded, not full history), open tracker issues (for dedup), open PRs (avoid colliding with in-flight work), wiki/ROADMAP read for direction
-- [ ] Gap-detection reasoning: dispatch to a configured harness, read-mostly and low-stakes by design
-- [ ] Proposal cap per wake cycle (default 3)
-- [ ] Stub-only proposal format — title + "this goal seems to imply X isn't tracked yet, want to define it?", explicitly not a full spec
-- [ ] Dedup check before filing, via the tracker adapter's `query_similar`/`query_by_label`
+- [ ] Watermark record (repo file or tracker-side): last commit SHA reviewed, last wake timestamp, proposals-filed-this-week count — today's wake dispatches a fresh investigation each time, no incremental bounding yet
+- [ ] Wake procedure's `git log <watermark>..HEAD` bounding, open-PR overlap check — not built; the prompt asks the harness to look at git history itself, unbounded
+- [x] Gap-detection reasoning: dispatch to a configured harness, read-mostly and low-stakes by design (`src/pm.rs` — restricted `--allowedTools`, not the Worker's `auto` permission mode)
+- [x] Proposal cap per wake cycle (`presence.proposal_cap_per_wake`, default suggested 3)
+- [ ] Stub-only proposal format — title + "this goal seems to imply X isn't tracked yet, want to define it?", explicitly not a full spec — today's proposals are full `Proposal` structs, not gap-flag stubs
+- [x] Dedup check before filing, via the tracker adapter's `query_similar` (`pm::wake`)
 
 ## Research agent
 
@@ -32,50 +32,53 @@ and are explicitly out of v1.
 
 ## Worker / dispatch
 
-- [ ] `HarnessProfile` type (name, cmd, auth_mode, priority) and the ordered profile list from decision #8
-- [ ] Dispatch-with-fallback: try the highest-priority profile for the assigned harness; on a *detected block* (typed error signal — `rate_limit`/`billing_error`/`oauth_org_not_allowed`-class, not any nonzero exit) fall through to the next profile
-- [ ] Per-issue git worktree isolation: path-prefix checks against workspace root, sanitized workspace keys with hash-suffix on collision
+- [x] `HarnessProfile` type (name, kind, cmd, auth_mode, priority) and the ordered profile list (see `docs/wiki/architecture/harness-dispatch.md`)
+- [x] Dispatch-with-fallback: try the highest-priority profile for the assigned harness; on a *detected block* (typed error signal parsed from `--output-format stream-json`'s `system/api_retry` events — `rate_limit`/`billing_error`/`oauth_org_not_allowed`-class, not any nonzero exit) fall through to the next profile
+- [x] Hard per-dispatch timeout + `kill_on_drop` — a stalled harness process is killed and marked `TimedOut`, not implied by the design doc but added during live testing since an unbounded `cmd.output()` would otherwise hang the whole reconciliation tick forever
+- [ ] Per-issue git worktree isolation: path-prefix checks against workspace root, sanitized workspace keys with hash-suffix on collision — dispatch runs in a single configured `daemon.workdir` today, no per-issue isolation yet
 - [ ] Lifecycle hooks: `after_create` / `before_run` / `after_run` / `before_remove`, only `before_run` failure aborts the run
-- [ ] Per-run phase state machine (Symphony's phases, plus the two states nothing surveyed had — awaiting-input, stuck/looping; see `src/state.rs`)
+- [x] Per-run phase state machine (Symphony's phases, plus the two states nothing surveyed had — awaiting-input, stuck/looping; see `src/state.rs`)
 - [ ] Continuation-turn resume on review feedback — resume the same session, don't re-render a fresh prompt (fixes Symphony's known weak point)
-- [ ] Orchestrator-mediated tracker access only (decision #7) — the dispatched harness never gets a tracker credential or write tool
-- [ ] Structured harness output (suggested comment / believed status / needs-input signal) parsed by the orchestrator, which is the only thing that ever calls the tracker adapter's write methods
+- [x] Orchestrator-mediated tracker access only (see `docs/wiki/architecture/harness-tracker-isolation.md`) — the dispatched harness never gets a tracker credential or write tool
+- [ ] Structured harness output (suggested comment / believed status / needs-input signal) parsed by the orchestrator — today's Worker posts a plain-text trace-link note (`worker::run_dispatch`), not a structured signal the reconciliation loop reads back
 
 ## Tracker adapter
 
-- [ ] `TrackerAdapter` trait: `create_proposal`, `set_decision_state`, `query_by_label`, `query_similar`
-- [ ] Linear implementation (GraphQL via `reqwest`, typed request/response structs via `serde`)
-- [ ] Structured proposal issue body: title, one-line summary, 2-3 "why now" bullets, effort estimate (S/M/L), risk note, YAML frontmatter (`task_type`, `target_paths`, `acceptance_criteria`, `research_ref`)
-- [ ] Decision surface: label/state transition (`proposal:pending` → `proposal:approved`/`proposal:rejected`)
+- [x] `TrackerAdapter` trait: `create_proposal`, `set_decision_state`, `query_by_label`, `query_similar`, `attach_note`
+- [x] Linear implementation (GraphQL via `reqwest`, typed request/response structs via `serde` — see `docs/wiki/architecture/tracker-adapter.md` § `LinearAdapter` implementation notes)
+- [x] File-backed local implementation (`src/tracker/file.rs`) — not in the original design, added so the dispatch/PM loop could be proven end-to-end without Linear credentials; a real backend, not a mock
+- [ ] Structured proposal issue body: title, one-line summary, 2-3 "why now" bullets, effort estimate (S/M/L), risk note, YAML frontmatter (`task_type`, `target_paths`, `acceptance_criteria`, `research_ref`) — `LinearAdapter::create_proposal` renders a description body; the exact frontmatter-in-body format hasn't been checked against `agent-handoff.md`'s contract end-to-end
+- [x] Decision surface: label/state transition (`proposal:pending` → `proposal:approved`/`proposal:rejected`)
 - [ ] Auto-stale-close after N days (default 7) — distinct from an explicit reject for dedup purposes
-- [ ] Dedup query: content-hash/title-similarity match, rejected-label check, open-PR-file-overlap check (decision #6) — queried live, no local mirror
+- [x] Dedup query: title-similarity match via `query_similar` (Linear's `searchIssues`; file backend's is a case-insensitive substring match) — content-hash matching and open-PR-file-overlap checking not built
 
 ## CLI / observability
 
-- [ ] `lucid start` — start the daemon
-- [ ] `lucid status` — list running/blocked/retrying agents (Symphony's dashboard content model, as CLI output)
-- [ ] Full command tree, flags, and output formats: see `docs/CLI.md`
+- [x] `lucid start` — start the daemon (foreground only; detach/IPC not designed, see docs/CLI.md § Not yet designed)
+- [ ] `lucid status` / `lucid show` — blocked on the same undesigned IPC; `Daemon::runs_snapshot` exists for an in-process caller but nothing cross-process reads it yet
+- [x] `lucid presence status` / `lucid presence override` / `lucid pm wake` / `lucid config validate` / `lucid config show`
+- [x] Full command tree, flags, and output formats: see `docs/CLI.md`
 
 ## Reconciliation loop
 
-- [ ] Poll tick: stall-detect running work (`elapsed_ms > stall_timeout_ms` since last event)
-- [ ] Refresh tracker state for all claimed issues each tick: terminal → cleanup, no-longer-active → stop without cleanup, still-active → update snapshot
-- [ ] Parked-state rule, made explicit (not just implied): once a Worker's item is in a human-review-equivalent state, stop dispatching/polling it entirely until a human moves it
-- [ ] Persist reconciliation/session state to `rusqlite` so a restart doesn't lose in-flight tracking — explicitly not repeating Symphony's in-memory-only blocked-state weakness
+- [x] Poll tick: presence-gated dispatch of `proposal:approved` issues, retrying a previous `Failed`/`TimedOut` run (`src/daemon.rs`) — deliberately **sequential per tick, not concurrent** (a real task-supervisor with cross-tick polling was judged more machinery than this pass warranted; see the module doc on `Daemon`), so stall protection is per-dispatch-timeout rather than a separate concurrent stall detector
+- [ ] Refresh tracker state for all claimed issues each tick: terminal → cleanup, no-longer-active → stop without cleanup, still-active → update snapshot — today only checks "is this issue still labeled approved," doesn't detect a human un-approving/closing an in-flight issue mid-run
+- [ ] Parked-state rule, made explicit (not just implied): once a Worker's item is in a human-review-equivalent state, stop dispatching/polling it entirely until a human moves it — `WorkerPhase::AwaitingHumanInput` exists but nothing in the current dispatch flow ever produces it yet
+- [ ] Persist reconciliation/session state to `rusqlite` so a restart doesn't lose in-flight tracking — still in-memory only (`Daemon.runs`), explicitly not yet fixing the Symphony in-memory-only weakness the design called out
 
 ---
 
 ## Deferred / not v1
 
-Explicitly out of scope for the first build, per design.md — not forgotten, just sequenced later:
+Explicitly out of scope for the first build — not forgotten, just sequenced later:
 
 - Web dashboard (CLI-only for v1; becomes a real ask only if CLI check-ins become the bottleneck)
 - GitHub Issues tracker adapter (Linear first; the interface should make this a second implementation, not a rewrite, once it's actually needed)
 - Non-`logind` presence sources (Windows-host `GetLastInputInfo` for WSL2, macOS IOKit, etc.) — the trait supports them, but none are built until a specific environment needs one
-- Review/rework auto-trigger policy — auto-resume-on-any-comment (cyrus-style) vs. explicit-mention-required (Copilot-style) is flagged in design.md as a real, deliberately undecided fork in the road
+- Review/rework auto-trigger policy — auto-resume-on-any-comment (cyrus-style) vs. explicit-mention-required (Copilot-style) is a real, deliberately undecided fork in the road (see `docs/wiki/architecture/review-rework-ux.md`)
 - Loop/unproductive-progress ("stuck") *detection logic* — the state exists in the state machine, but no heuristic for actually detecting it is designed yet
 - Merge-conflict handling — flagged as unsolved industry-wide in the gap analysis, no design answer yet
 - Proactive stall notification (active push instead of passive dashboard/log checking) — named as a plausible differentiator, not designed
-- "Proof of work" artifacts attached to the tracker item/PR (CI status, walkthrough video, etc.) — noted pattern from Symphony/Cursor, not designed
+- "Proof of work" artifacts attached to the tracker item/PR (CI status, walkthrough video, etc.) — noted pattern from Symphony/Cursor; one concrete instance (trace-correlation links) is now designed, see `docs/wiki/architecture/trace-correlation.md` — the rest (CI status, walkthrough video) still undesigned
 - Runaway/self-replicating-session guard — noted gap from cyrus's issue tracker, not designed
 - Rate-limit-specific failure handling as a distinct class from generic retry — noted gap, not designed
