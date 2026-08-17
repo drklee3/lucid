@@ -22,7 +22,7 @@ use crate::presence::{self, PresenceMode, PresenceSourceList};
 use crate::pm;
 use crate::state::WorkerRun;
 use crate::tracker::TrackerAdapter;
-use crate::worker;
+use crate::worker::{self, CompletionMode};
 use chrono::Utc;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -40,6 +40,7 @@ pub struct Daemon {
     presence_cfg: PresenceConfig,
     override_file: OverrideFile,
     workdir: PathBuf,
+    completion_mode: CompletionMode,
     tick_interval: Duration,
     stall_timeout: Duration,
     pm_wake_interval: Duration,
@@ -76,6 +77,7 @@ impl Daemon {
             },
             override_file: OverrideFile::new(override_path),
             workdir: config.daemon.workdir.clone(),
+            completion_mode: config.daemon.completion_mode,
             tick_interval: Duration::from_secs(config.daemon.tick_interval_secs),
             stall_timeout: Duration::from_secs(config.daemon.stall_timeout_secs),
             pm_wake_interval: Duration::from_secs(config.daemon.pm_wake_interval_mins * 60),
@@ -144,17 +146,21 @@ impl Daemon {
             }
 
             println!("dispatching {} — {}", issue.id, issue.title);
-            let run = worker::run_dispatch(
+            // Also decides Done / NeedsReview per `issue.review` — a no-op for a
+            // Failed/TimedOut run, which leaves the tracker item `Approved` so the
+            // `should_dispatch` check above retries it on a later tick.
+            let run = worker::dispatch_and_finalize(
                 self.tracker.as_ref(),
-                &issue.id,
-                &issue.title,
+                &issue,
                 &self.profiles,
                 &self.observability,
                 &self.workdir,
                 self.stall_timeout,
+                self.completion_mode,
             )
             .await?;
             println!("{} finished: {:?}", issue.id, run.phase);
+
             self.runs.lock().unwrap().insert(issue.id, run);
         }
         Ok(())

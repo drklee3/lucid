@@ -4,11 +4,12 @@
 #![allow(clippy::unused_async)]
 
 use clap::Parser;
-use lucid::cli::{self, Cli, Command, ConfigCommand, PmCommand, PresenceCommand};
+use lucid::cli::{self, Cli, Command, ConfigCommand, PmCommand, PresenceCommand, TaskCommand};
 use lucid::config::{Config, default_override_path};
 use lucid::daemon::Daemon;
 use lucid::presence::override_file::{OverrideFile, OverrideMode};
 use lucid::presence::{self, PresenceMode, PresenceSourceList};
+use lucid::tracker::{DecisionState, decision_label};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -39,6 +40,16 @@ async fn main() -> anyhow::Result<()> {
         Command::Config { command } => match command {
             ConfigCommand::Validate { config } => config_validate(config).await,
             ConfigCommand::Show { config, format } => config_show(config, format).await,
+        },
+        Command::Task { command } => match command {
+            TaskCommand::List { state, format, config } => task_list(state, format, config).await,
+            TaskCommand::Approve { issue_id, config } => {
+                task_set_decision(&issue_id, DecisionState::Approved, config).await
+            }
+            TaskCommand::Reject { issue_id, config } => {
+                task_set_decision(&issue_id, DecisionState::Rejected, config).await
+            }
+            TaskCommand::DispatchNow { issue_id, config } => task_dispatch_now(&issue_id, config).await,
         },
     }
 }
@@ -223,6 +234,89 @@ async fn config_show(config: Option<PathBuf>, format: cli::ConfigFormat) -> anyh
     match format {
         cli::ConfigFormat::Toml => println!("{}", toml::to_string_pretty(&config)?),
         cli::ConfigFormat::Json => println!("{}", serde_json::to_string_pretty(&config)?),
+    }
+    Ok(())
+}
+
+fn task_state_to_decision(state: cli::TaskState) -> DecisionState {
+    match state {
+        cli::TaskState::Pending => DecisionState::Pending,
+        cli::TaskState::Approved => DecisionState::Approved,
+        cli::TaskState::Rejected => DecisionState::Rejected,
+        cli::TaskState::Done => DecisionState::Done,
+        cli::TaskState::NeedsReview => DecisionState::NeedsReview,
+    }
+}
+
+async fn task_list(state: cli::TaskState, format: cli::OutputFormat, config: Option<PathBuf>) -> anyhow::Result<()> {
+    let config = Config::load(&resolve_config_path(config))?;
+    let tracker = lucid::tracker::build(&config.tracker)?;
+    let decision = task_state_to_decision(state);
+    let issues = tracker.query_by_label(decision_label(decision)).await?;
+
+    match format {
+        cli::OutputFormat::Json => {
+            let payload: Vec<_> = issues
+                .iter()
+                .map(|i| serde_json::json!({"id": i.id, "title": i.title, "review": format!("{:?}", i.review)}))
+                .collect();
+            println!("{}", serde_json::to_string_pretty(&payload)?);
+        }
+        cli::OutputFormat::Table => {
+            if issues.is_empty() {
+                println!("(no issues in state {decision:?})");
+            } else {
+                println!("{:<14} {:<8} TITLE", "ID", "REVIEW");
+                for i in &issues {
+                    println!("{:<14} {:<8} {}", i.id, format!("{:?}", i.review), i.title);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Writes a decision state via the same `TrackerAdapter::set_decision_state` the
+/// tracker's own UI action would trigger — Linear's label, for the real backend —
+/// not a second, lucid-side record of approval. See
+/// docs/wiki/architecture/worker-completion.md.
+async fn task_set_decision(issue_id: &str, state: DecisionState, config: Option<PathBuf>) -> anyhow::Result<()> {
+    let config = Config::load(&resolve_config_path(config))?;
+    let tracker = lucid::tracker::build(&config.tracker)?;
+    tracker.set_decision_state(issue_id, state).await?;
+    println!("{issue_id} -> {state:?}");
+    Ok(())
+}
+
+/// Runs the exact dispatch-and-finalize path the daemon's tick loop would run for
+/// this issue — on demand instead of on the next tick. Requires the issue already
+/// be `Approved` in the tracker: this triggers *when* approved work runs, it never
+/// decides *whether* it's allowed to.
+async fn task_dispatch_now(issue_id: &str, config: Option<PathBuf>) -> anyhow::Result<()> {
+    let config = Config::load(&resolve_config_path(config))?;
+    let tracker = lucid::tracker::build(&config.tracker)?;
+
+    let approved = tracker.query_by_label(decision_label(DecisionState::Approved)).await?;
+    let issue = approved.into_iter().find(|i| i.id == issue_id).ok_or_else(|| {
+        anyhow::anyhow!(
+            "`{issue_id}` isn't in the Approved state — approve it first (`lucid task approve {issue_id}`)"
+        )
+    })?;
+
+    let run = lucid::worker::dispatch_and_finalize(
+        tracker.as_ref(),
+        &issue,
+        &config.harness_profiles,
+        &config.observability,
+        &config.daemon.workdir,
+        Duration::from_secs(config.daemon.stall_timeout_secs),
+        config.daemon.completion_mode,
+    )
+    .await?;
+
+    println!("{issue_id}: {:?}", run.phase);
+    if let Some(err) = &run.last_error {
+        println!("error: {err}");
     }
     Ok(())
 }

@@ -51,6 +51,56 @@ pub enum Command {
         #[command(subcommand)]
         command: ConfigCommand,
     },
+    /// Inspect/act on tracker items — a terminal convenience over the tracker's
+    /// own UI (Linear), not a second source of truth: every subcommand goes
+    /// through the same `TrackerAdapter` the daemon itself uses. See
+    /// docs/wiki/architecture/worker-completion.md.
+    Task {
+        #[command(subcommand)]
+        command: TaskCommand,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum TaskCommand {
+    /// List issues in a given decision state (default: approved)
+    List {
+        #[arg(long, value_enum, default_value_t = TaskState::Approved)]
+        state: TaskState,
+        #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
+        format: OutputFormat,
+        #[arg(long)]
+        config: Option<PathBuf>,
+    },
+    /// Approve an issue for dispatch
+    Approve {
+        issue_id: String,
+        #[arg(long)]
+        config: Option<PathBuf>,
+    },
+    /// Reject an issue
+    Reject {
+        issue_id: String,
+        #[arg(long)]
+        config: Option<PathBuf>,
+    },
+    /// Dispatch one already-`Approved` issue right now, bypassing the tick
+    /// interval and presence gate — the same dispatch path the daemon's regular
+    /// tick uses, just triggered on demand instead of on a timer.
+    DispatchNow {
+        issue_id: String,
+        #[arg(long)]
+        config: Option<PathBuf>,
+    },
+}
+
+#[derive(ValueEnum, Debug, Clone, Copy)]
+pub enum TaskState {
+    Pending,
+    Approved,
+    Rejected,
+    Done,
+    NeedsReview,
 }
 
 #[derive(Subcommand, Debug)]

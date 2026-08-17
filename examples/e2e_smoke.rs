@@ -13,8 +13,8 @@
 use lucid::config::ObservabilityConfig;
 use lucid::harness::{AuthMode, HarnessKind, HarnessProfile};
 use lucid::tracker::file::FileTracker;
-use lucid::tracker::TrackerAdapter;
-use lucid::worker;
+use lucid::tracker::{DecisionState, EffortEstimate, Proposal, ReviewMode, TrackerAdapter};
+use lucid::worker::{self, CompletionMode};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -40,18 +40,56 @@ async fn main() -> anyhow::Result<()> {
         trace_ui_project_id: None,
     };
 
-    let prompt =
-        "Reply with exactly the word OK and don't read, write, or run anything else.";
+    // A real git repo, so CompletionMode::Commit has something to observe —
+    // dispatch runs directly in `workdir` (no worktree isolation yet), so this
+    // mirrors what `daemon.workdir` needs to be for that mode today.
+    let run_git = |args: &[&str]| std::process::Command::new("git").args(args).current_dir(&workdir).output();
+    run_git(&["init", "-q"])?;
+    run_git(&["config", "user.email", "smoke@example.com"])?;
+    run_git(&["config", "user.name", "smoke"])?;
+    std::fs::write(workdir.join("README.md"), "smoke\n")?;
+    run_git(&["add", "-A"])?;
+    run_git(&["commit", "-q", "-m", "init"])?;
+
+    // Files a full proposal (title + frontmatter/body handoff surface) and
+    // approves it — exercises the same create_proposal -> set_decision_state ->
+    // query_by_label("proposal:approved") path `daemon::dispatch_approved_issues`
+    // uses, instead of hand-building a bare TrackerIssue.
+    let proposal = Proposal {
+        title: "Add a NOTES.md file".to_string(),
+        summary: "Create NOTES.md with the single line 'smoke test'.".to_string(),
+        why_now: vec!["e2e smoke coverage".to_string()],
+        effort_estimate: EffortEstimate::Small,
+        risk_note: "none".to_string(),
+        task_type: "chore".to_string(),
+        target_paths: vec!["NOTES.md".to_string()],
+        acceptance_criteria: vec!["NOTES.md exists and contains 'smoke test'".to_string()],
+        research_ref: None,
+        review: ReviewMode::Auto,
+    };
+    let issue_id = tracker.create_proposal(&proposal).await?;
+    tracker.set_decision_state(&issue_id, DecisionState::Approved).await?;
+
+    let approved = tracker.query_by_label("proposal:approved").await?;
+    let issue = approved
+        .into_iter()
+        .find(|i| i.id == issue_id)
+        .expect("just-approved issue should be visible to query_by_label");
+
+    let completion_mode = CompletionMode::Commit;
+    let prompt = worker::dispatch_prompt(&issue, completion_mode);
+    println!("--- dispatch prompt ---\n{prompt}\n");
 
     println!("dispatching against {}", workdir.display());
     let run = worker::run_dispatch(
         &tracker,
-        "SMOKE-1",
-        prompt,
+        &issue.id,
+        &prompt,
         &profiles,
         &observability,
         &workdir,
         std::time::Duration::from_secs(120),
+        completion_mode,
     )
     .await?;
 
@@ -61,12 +99,27 @@ async fn main() -> anyhow::Result<()> {
     println!("session_id:  {:?}", run.session_id);
     println!("last_error:  {:?}", run.last_error);
 
-    println!("\n--- tracker notes for SMOKE-1 ---");
-    for issue in tracker.query_similar("SMOKE").await? {
-        println!("{} — {}", issue.id, issue.title);
-    }
+    worker::finalize_completion(
+        &tracker,
+        &issue,
+        &run,
+        &profiles,
+        &observability,
+        &workdir,
+        std::time::Duration::from_secs(120),
+    )
+    .await?;
+
+    let final_state = tracker
+        .query_similar(&issue.title)
+        .await?
+        .into_iter()
+        .find(|i| i.id == issue.id)
+        .and_then(|i| i.decision_state);
+    println!("\nfinal decision_state: {final_state:?}");
+
     println!(
-        "\n(full record, including the posted note/trace link, is in {})",
+        "\n(full record, including the posted notes/trace link, is in {})",
         tracker_path.display()
     );
 

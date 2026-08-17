@@ -2,6 +2,7 @@
 //! the daemon's own tick/timeout knobs.
 
 use crate::harness::HarnessProfile;
+use crate::worker::CompletionMode;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -89,6 +90,11 @@ pub struct DaemonConfig {
     /// works for now — defaults to the current directory.
     #[serde(default = "default_workdir")]
     pub workdir: PathBuf,
+    /// How a successful dispatch's changes get committed — see
+    /// docs/wiki/architecture/worker-completion.md. Defaults to `None`: lucid
+    /// doesn't touch git, matching every behavior before this field existed.
+    #[serde(default)]
+    pub completion_mode: CompletionMode,
 }
 
 impl Default for DaemonConfig {
@@ -98,6 +104,7 @@ impl Default for DaemonConfig {
             stall_timeout_secs: default_stall_timeout_secs(),
             pm_wake_interval_mins: default_pm_wake_interval_mins(),
             workdir: default_workdir(),
+            completion_mode: CompletionMode::default(),
         }
     }
 }
