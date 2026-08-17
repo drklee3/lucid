@@ -4,7 +4,9 @@
 //! loop (see docs/wiki/architecture/trace-correlation.md) can be proven end-to-end
 //! today without needing Linear API credentials.
 
-use super::{DecisionState, Proposal, TrackerAdapter, TrackerIssue};
+use super::{
+    DecisionState, Proposal, ReviewMode, TrackerAdapter, TrackerIssue, decision_label, render_description,
+};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -14,6 +16,10 @@ use std::sync::Mutex;
 struct StoredIssue {
     id: String,
     title: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    review: ReviewMode,
     labels: Vec<String>,
     decision_state: Option<DecisionState>,
     notes: Vec<String>,
@@ -58,7 +64,9 @@ impl FileTracker {
         TrackerIssue {
             id: issue.id.clone(),
             title: issue.title.clone(),
+            description: issue.description.clone(),
             decision_state: issue.decision_state,
+            review: issue.review,
         }
     }
 }
@@ -71,7 +79,9 @@ impl TrackerAdapter for FileTracker {
         issues.push(StoredIssue {
             id: id.clone(),
             title: proposal.title.clone(),
-            labels: vec!["proposal:pending".to_string()],
+            description: Some(render_description(proposal)),
+            review: proposal.review,
+            labels: vec![decision_label(DecisionState::Pending).to_string()],
             decision_state: Some(DecisionState::Pending),
             notes: Vec::new(),
         });
@@ -86,6 +96,11 @@ impl TrackerAdapter for FileTracker {
             .find(|i| i.id == issue_id)
             .ok_or_else(|| anyhow::anyhow!("no such issue: {issue_id}"))?;
         issue.decision_state = Some(state);
+        // Mirror LinearAdapter::set_decision_state: `labels` is the field
+        // `query_by_label` actually filters on, so leaving it unchanged means an
+        // approval never becomes visible to the dispatch loop.
+        issue.labels.retain(|l| !l.starts_with("proposal:"));
+        issue.labels.push(decision_label(state).to_string());
         self.persist(&issues)
     }
 
@@ -120,6 +135,8 @@ impl TrackerAdapter for FileTracker {
             issues.push(StoredIssue {
                 id: issue_id.to_string(),
                 title: format!("(auto-created by attach_note for {issue_id})"),
+                description: None,
+                review: ReviewMode::Auto,
                 labels: Vec::new(),
                 decision_state: None,
                 notes: vec![body.to_string()],
@@ -132,7 +149,7 @@ impl TrackerAdapter for FileTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tracker::EffortEstimate;
+    use crate::tracker::{EffortEstimate, ReviewMode};
 
     fn proposal(title: &str) -> Proposal {
         Proposal {
@@ -145,6 +162,7 @@ mod tests {
             target_paths: vec![],
             acceptance_criteria: vec![],
             research_ref: None,
+            review: ReviewMode::Auto,
         }
     }
 
@@ -186,10 +204,26 @@ mod tests {
             .unwrap();
 
         let reopened = FileTracker::open(&path).unwrap();
-        let found = reopened.query_by_label("proposal:pending").await.unwrap();
-        // Label is unchanged (this store doesn't remap labels on decision change),
-        // but the decision_state field itself must have survived the round trip.
+        // The `proposal:pending` label from create_proposal must have been
+        // replaced, not just left alongside the new one — otherwise the issue
+        // would show up under both queries.
+        assert!(reopened.query_by_label("proposal:pending").await.unwrap().is_empty());
+        let found = reopened.query_by_label("proposal:approved").await.unwrap();
+        assert_eq!(found.len(), 1);
         assert_eq!(found[0].decision_state, Some(DecisionState::Approved));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn approving_makes_the_issue_visible_to_the_dispatch_loop() {
+        let path = scratch_path("approve-visibility");
+        let tracker = FileTracker::open(&path).unwrap();
+        let id = tracker.create_proposal(&proposal("Ship the thing")).await.unwrap();
+
+        assert!(tracker.query_by_label("proposal:approved").await.unwrap().is_empty());
+        tracker.set_decision_state(&id, DecisionState::Approved).await.unwrap();
+        assert_eq!(tracker.query_by_label("proposal:approved").await.unwrap().len(), 1);
 
         let _ = std::fs::remove_file(&path);
     }

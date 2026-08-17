@@ -6,7 +6,7 @@
 
 use crate::config::ObservabilityConfig;
 use crate::harness::{self, DispatchRequest, HarnessProfile, TelemetryConfig};
-use crate::tracker::{EffortEstimate, Proposal, TrackerAdapter};
+use crate::tracker::{EffortEstimate, Proposal, ReviewMode, TrackerAdapter};
 use serde::Deserialize;
 use std::path::Path;
 use std::time::Duration;
@@ -138,6 +138,10 @@ pub async fn wake(
             target_paths: r.target_paths,
             acceptance_criteria: r.acceptance_criteria,
             research_ref: None,
+            // PM-filed proposals don't pick a review mode yet — not exposed in
+            // the wake prompt's JSON schema this pass (see docs/FEATURES.md §
+            // PM / gap-detection). A human can retag the issue after filing.
+            review: ReviewMode::Auto,
         };
 
         if !tracker.query_similar(&proposal.title).await?.is_empty() {

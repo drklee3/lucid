@@ -6,7 +6,10 @@
 //! is simpler and more robust for a non-agentic caller than going through a layer
 //! built for LLM tool-calling.
 
-use super::{DecisionState, EffortEstimate, Proposal, TrackerAdapter, TrackerIssue};
+use super::{
+    DecisionState, LABEL_PREFIX, Proposal, ReviewMode, TrackerAdapter, TrackerIssue, decision_from_label,
+    decision_label, render_description, review_from_label, review_label,
+};
 use anyhow::{Context, anyhow, bail};
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -138,9 +141,10 @@ impl TrackerAdapter for LinearAdapter {
             }
         ";
 
-        let label = self
+        let decision_label_id = self
             .label_id(decision_label(DecisionState::Pending))
             .await?;
+        let review_label_id = self.label_id(review_label(proposal.review)).await?;
         let team = team_id(
             &self
                 .graphql(TEAM_ID_QUERY, json!({ "team": self.team_key }))
@@ -152,7 +156,7 @@ impl TrackerAdapter for LinearAdapter {
             "teamId": team,
             "title": proposal.title,
             "description": render_description(proposal),
-            "labelIds": [label],
+            "labelIds": [decision_label_id, review_label_id],
         });
 
         let data: IssueCreateData = self.graphql(MUTATION, json!({ "input": input })).await?;
@@ -225,7 +229,7 @@ impl TrackerAdapter for LinearAdapter {
                 first: $first
                 after: $after
               ) {
-                nodes { id title labels(first: 100) { nodes { id name } } }
+                nodes { id title description labels(first: 100) { nodes { id name } } }
                 pageInfo { hasNextPage endCursor }
               }
             }
@@ -276,7 +280,7 @@ impl TrackerAdapter for LinearAdapter {
                 includeArchived: true
                 first: $first
               ) {
-                nodes { id title labels(first: 100) { nodes { id name } } }
+                nodes { id title description labels(first: 100) { nodes { id name } } }
               }
             }
         ";
@@ -325,82 +329,10 @@ const TEAM_ID_QUERY: &str = r"
     }
 ";
 
-const LABEL_PREFIX: &str = "proposal:";
-
 fn team_id(data: &TeamsData) -> Option<String> {
     data.teams.nodes.first().map(|node| node.id.clone())
 }
 
-fn decision_label(state: DecisionState) -> &'static str {
-    match state {
-        DecisionState::Pending => "proposal:pending",
-        DecisionState::Approved => "proposal:approved",
-        DecisionState::Rejected => "proposal:rejected",
-        DecisionState::StaleClosed => "proposal:stale",
-    }
-}
-
-fn decision_from_label(name: &str) -> Option<DecisionState> {
-    match name {
-        "proposal:pending" => Some(DecisionState::Pending),
-        "proposal:approved" => Some(DecisionState::Approved),
-        "proposal:rejected" => Some(DecisionState::Rejected),
-        "proposal:stale" => Some(DecisionState::StaleClosed),
-        _ => None,
-    }
-}
-
-fn effort_label(effort: EffortEstimate) -> &'static str {
-    match effort {
-        EffortEstimate::Small => "S",
-        EffortEstimate::Medium => "M",
-        EffortEstimate::Large => "L",
-    }
-}
-
-/// The Worker parses the frontmatter block deterministically (see
-/// docs/wiki/architecture/agent-handoff.md), so every scalar and list is emitted as
-/// JSON — a YAML 1.2 subset — instead of bare text that quoting could break.
-fn render_description(proposal: &Proposal) -> String {
-    use std::fmt::Write;
-
-    let research_ref = proposal
-        .research_ref
-        .as_deref()
-        .map_or_else(|| "null".to_string(), yaml_scalar);
-
-    let mut out = String::from("---\n");
-    let _ = writeln!(out, "task_type: {}", yaml_scalar(&proposal.task_type));
-    let _ = writeln!(out, "target_paths: {}", yaml_list(&proposal.target_paths));
-    let _ = writeln!(
-        out,
-        "acceptance_criteria: {}",
-        yaml_list(&proposal.acceptance_criteria)
-    );
-    let _ = writeln!(out, "research_ref: {research_ref}");
-    out.push_str("---\n\n");
-
-    out.push_str(&proposal.summary);
-    out.push_str("\n\n## Why now\n\n");
-    for reason in &proposal.why_now {
-        let _ = writeln!(out, "- {reason}");
-    }
-    let _ = write!(
-        out,
-        "\n**Effort:** {}\n\n**Risk:** {}\n",
-        effort_label(proposal.effort_estimate),
-        proposal.risk_note
-    );
-    out
-}
-
-fn yaml_scalar(value: &str) -> String {
-    Value::String(value.to_string()).to_string()
-}
-
-fn yaml_list(values: &[String]) -> String {
-    Value::from(values.to_vec()).to_string()
-}
 
 #[derive(Deserialize)]
 struct GraphQlResponse<T> {
@@ -433,6 +365,8 @@ struct IdNode {
 struct IssueNode {
     id: String,
     title: String,
+    #[serde(default)]
+    description: Option<String>,
     labels: Nodes<LabelNode>,
 }
 
@@ -443,10 +377,20 @@ impl IssueNode {
             .nodes
             .iter()
             .find_map(|node| decision_from_label(&node.name));
+        let review = self
+            .labels
+            .nodes
+            .iter()
+            .find_map(|node| review_from_label(&node.name))
+            .unwrap_or(ReviewMode::Auto);
         TrackerIssue {
             id: self.id,
             title: self.title,
+            // Linear returns `""` for a blank description, not `null` — normalize
+            // so callers can match on `None` for "no handoff surface" uniformly.
+            description: self.description.filter(|d| !d.is_empty()),
             decision_state,
+            review,
         }
     }
 }
@@ -536,6 +480,7 @@ struct CommentCreateData {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::EffortEstimate;
 
     fn sample() -> Proposal {
         Proposal {
@@ -548,6 +493,7 @@ mod tests {
             target_paths: vec!["src/presence/mod.rs".to_string()],
             acceptance_criteria: vec!["Idle flips after threshold".to_string()],
             research_ref: None,
+            review: super::ReviewMode::Auto,
         }
     }
 
@@ -592,6 +538,8 @@ mod tests {
             DecisionState::Approved,
             DecisionState::Rejected,
             DecisionState::StaleClosed,
+            DecisionState::Done,
+            DecisionState::NeedsReview,
         ] {
             let label = decision_label(state);
             assert!(label.starts_with(LABEL_PREFIX));

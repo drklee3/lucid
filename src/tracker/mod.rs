@@ -9,6 +9,7 @@ pub mod file;
 pub mod linear;
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Proposal {
@@ -21,6 +22,47 @@ pub struct Proposal {
     pub target_paths: Vec<String>,
     pub acceptance_criteria: Vec<String>,
     pub research_ref: Option<String>,
+    /// Who gets to close this one out — see docs/wiki/architecture/worker-completion.md.
+    #[serde(default)]
+    pub review: ReviewMode,
+}
+
+/// How a successful dispatch's outcome gets finalized — the fork
+/// docs/wiki/architecture/review-rework-ux.md left open, resolved per-issue rather
+/// than per-repo so a human can dial trust up or down ticket by ticket.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ReviewMode {
+    /// A harness-reported success moves the issue straight to `Done` — no gate.
+    #[default]
+    Auto,
+    /// A harness-reported success moves the issue to `NeedsReview` and stops —
+    /// a human has to look and flip it themselves.
+    Human,
+    /// A harness-reported success triggers a second, read-only dispatch that
+    /// reviews the diff against `acceptance_criteria`; its verdict decides
+    /// `Done` vs `NeedsReview`.
+    Agent,
+}
+
+pub const REVIEW_LABEL_PREFIX: &str = "review:";
+
+#[must_use]
+pub fn review_label(mode: ReviewMode) -> &'static str {
+    match mode {
+        ReviewMode::Auto => "review:auto",
+        ReviewMode::Human => "review:human",
+        ReviewMode::Agent => "review:agent",
+    }
+}
+
+#[must_use]
+pub fn review_from_label(name: &str) -> Option<ReviewMode> {
+    match name {
+        "review:auto" => Some(ReviewMode::Auto),
+        "review:human" => Some(ReviewMode::Human),
+        "review:agent" => Some(ReviewMode::Agent),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -36,13 +78,56 @@ pub enum DecisionState {
     Approved,
     Rejected,
     StaleClosed,
+    /// A dispatch for this issue ran and the harness reported success — set by
+    /// the daemon itself, not a human (see docs/wiki/architecture/worker-completion.md).
+    /// Distinct from `Approved`, which just means "safe to dispatch."
+    Done,
+    /// A dispatch succeeded but `ReviewMode::Human`/`Agent` didn't clear it —
+    /// parked until a human moves it (see docs/wiki/architecture/worker-completion.md).
+    /// The dispatch loop never re-picks this up on its own.
+    NeedsReview,
+}
+
+pub const LABEL_PREFIX: &str = "proposal:";
+
+#[must_use]
+pub fn decision_label(state: DecisionState) -> &'static str {
+    match state {
+        DecisionState::Pending => "proposal:pending",
+        DecisionState::Approved => "proposal:approved",
+        DecisionState::Rejected => "proposal:rejected",
+        DecisionState::StaleClosed => "proposal:stale",
+        DecisionState::Done => "proposal:done",
+        DecisionState::NeedsReview => "proposal:needs-review",
+    }
+}
+
+#[must_use]
+pub fn decision_from_label(name: &str) -> Option<DecisionState> {
+    match name {
+        "proposal:pending" => Some(DecisionState::Pending),
+        "proposal:approved" => Some(DecisionState::Approved),
+        "proposal:rejected" => Some(DecisionState::Rejected),
+        "proposal:stale" => Some(DecisionState::StaleClosed),
+        "proposal:done" => Some(DecisionState::Done),
+        "proposal:needs-review" => Some(DecisionState::NeedsReview),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct TrackerIssue {
     pub id: String,
     pub title: String,
+    /// The frontmatter+body handoff surface a Worker parses deterministically —
+    /// see docs/wiki/architecture/agent-handoff.md. `None` for issues created
+    /// outside `create_proposal` (e.g. hand-filed tracker items).
+    pub description: Option<String>,
     pub decision_state: Option<DecisionState>,
+    /// Defaults to `ReviewMode::Auto` for issues with no `review:*` label/field —
+    /// matches today's behavior (a successful dispatch just... finishes) for
+    /// every issue created before this field existed.
+    pub review: ReviewMode,
 }
 
 #[async_trait::async_trait]
@@ -108,4 +193,60 @@ pub fn build(config: &crate::config::TrackerConfig) -> anyhow::Result<Box<dyn Tr
             "unknown tracker backend `{other}` (expected \"file\" or \"linear\")"
         )),
     }
+}
+
+fn effort_label(effort: EffortEstimate) -> &'static str {
+    match effort {
+        EffortEstimate::Small => "S",
+        EffortEstimate::Medium => "M",
+        EffortEstimate::Large => "L",
+    }
+}
+
+/// Renders a `Proposal` into the frontmatter+body handoff surface a Worker parses
+/// deterministically (see docs/wiki/architecture/agent-handoff.md) — shared by every
+/// `TrackerAdapter` implementation so the surface a Worker sees doesn't drift by
+/// backend. Every scalar and list is emitted as JSON — a YAML 1.2 subset — instead
+/// of bare text that quoting could break.
+#[must_use]
+pub fn render_description(proposal: &Proposal) -> String {
+    use std::fmt::Write;
+
+    let research_ref = proposal
+        .research_ref
+        .as_deref()
+        .map_or_else(|| "null".to_string(), yaml_scalar);
+
+    let mut out = String::from("---\n");
+    let _ = writeln!(out, "task_type: {}", yaml_scalar(&proposal.task_type));
+    let _ = writeln!(out, "target_paths: {}", yaml_list(&proposal.target_paths));
+    let _ = writeln!(
+        out,
+        "acceptance_criteria: {}",
+        yaml_list(&proposal.acceptance_criteria)
+    );
+    let _ = writeln!(out, "research_ref: {research_ref}");
+    let _ = writeln!(out, "review: {}", yaml_scalar(review_label(proposal.review)));
+    out.push_str("---\n\n");
+
+    out.push_str(&proposal.summary);
+    out.push_str("\n\n## Why now\n\n");
+    for reason in &proposal.why_now {
+        let _ = writeln!(out, "- {reason}");
+    }
+    let _ = write!(
+        out,
+        "\n**Effort:** {}\n\n**Risk:** {}\n",
+        effort_label(proposal.effort_estimate),
+        proposal.risk_note
+    );
+    out
+}
+
+fn yaml_scalar(value: &str) -> String {
+    Value::String(value.to_string()).to_string()
+}
+
+fn yaml_list(values: &[String]) -> String {
+    Value::from(values.to_vec()).to_string()
 }
