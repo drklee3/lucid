@@ -268,13 +268,17 @@ Gap list only — no redesign yet. Each item names what an existing system does 
 - **None of our resolved decisions currently address**: rate-limit-specific handling as a distinct failure class (vs. generic retry), a runaway/self-replicating-session guard, bounded cleanup of completed session state, or persistence of blocked/error state across a Hermes restart (Symphony's own dashboard state doesn't survive a restart either — worth not inheriting that specific weakness).
 - **No system surveyed has solved proactive stall notification** — every one of them relies on the human noticing or polling a dashboard/log, not on an active push when something goes quiet. Given we're already building on Linear (mobile push) specifically to solve the remote-visibility requirement, closing this gap — an active "Worker stalled, here's why" push rather than passive dashboard-checking — is a plausible place to actually do better than every system surveyed, not just match them.
 
-## Next steps for this Claude Code session
+## Next steps for this Claude Code session (historical — superseded by `docs/FEATURES.md`)
 
-1. Pick the standalone orchestrator's own runtime/language and process model (systemd timer + script vs. a lightweight always-on loop) — this is now an open decision that didn't exist under the old "runs inside Hermes" framing.
-2. Draft `PM.md`, `RESEARCH.md`, `WORKER.md` role-contract files using the WORKFLOW.md frontmatter+body shape — the concrete artifact the orchestrator loads and renders per-harness, regardless of which harness (`claude -p` / `codex` / `hermes -p`) ends up dispatched.
-3. Prototype the `logind` D-Bus idle-hint watcher as a standalone script (Python + `dbus-idle`, or raw `python-dbus`) and confirm it fires correctly under the actual compositor in use here.
-4. Pick the first tracker adapter to build (Linear vs GitHub Issues) and sketch its state-mapping table (our internal states ↔ its labels/statuses) per the Symphony pattern in the first section above.
-5. Design the rejected-ideas/dedup store concretely — flat file vs tracker-native query vs small local DB — before writing any PM logic that depends on it.
-6. Decide the review/rework trigger explicitly (auto-resume-on-any-review-comment, cyrus-style, vs. explicit-mention-required, Copilot-style) — this is a real fork in the road surfaced by the gap analysis above, not a detail to leave implicit.
-7. Design the two v1 CLI commands (start-daemon, list/inspect active agents) against Symphony's Blocked/Retrying/Running table content as the reference for what "inspect" should show — this is the actual v1 observability surface, not a placeholder for a future dashboard.
-8. Prototype the Worker's git-worktree isolation directly against Symphony's invariants (path-prefix checks, sanitized keys, lifecycle hooks) — this is now net-new code to write, not something inherited from Hermes.
+This list is kept as-written for the record; it stopped being updated once the `lucid` repo existed and `docs/FEATURES.md` took over as the living checklist. Status as of the repo's initial scaffold commit:
+
+1. ~~Pick the standalone orchestrator's own runtime/language and process model~~ — **Done.** Rust, standalone process; see "Implementation language: Rust" above and `docs/wiki/architecture/tech-stack.md`.
+2. Draft `PM.md`, `RESEARCH.md`, `WORKER.md` role-contract files — **still open.** Tracked in `docs/FEATURES.md`.
+3. Prototype the `logind` D-Bus idle-hint watcher — **partially done, and refined.** `src/presence/logind.rs` is scaffolded (trait + stub, not real D-Bus calls yet), but a concrete finding since this item was written changes what "done" means here: `logind`'s idle tracking is confirmed dead on WSL2 (no seat/HID backend — see `docs/wiki/architecture/presence-detection.md`). The reference implementation is still correct to build; a second presence source is also needed before autonomous mode can actually trigger on this machine. Tracked in `docs/FEATURES.md`.
+4. Pick the first tracker adapter to build — **done** (Linear; `TrackerAdapter` trait + `src/tracker/linear.rs` scaffolded), though the concrete state-mapping table (our states ↔ Linear's labels) still needs to be written out — tracked in `docs/FEATURES.md`.
+5. ~~Design the rejected-ideas/dedup store concretely~~ — **superseded, not just done.** Resolved decision #6 above already settled this a different way than the question assumed: Linear itself is queried live as the dedup source of truth, no separate local store at all.
+6. Decide the review/rework trigger explicitly (auto-resume-on-any-review-comment, cyrus-style, vs. explicit-mention-required, Copilot-style) — **still open**, deliberately. Tracked in `docs/FEATURES.md` § Deferred.
+7. ~~Design the two v1 CLI commands~~ — **Done.** See `docs/CLI.md`.
+8. Prototype the Worker's git-worktree isolation — **still open**, no worktree code written yet. Tracked in `docs/FEATURES.md`.
+
+**Going forward, treat `docs/FEATURES.md` § Deferred / not v1 as the current, authoritative open-items list** — don't add new items here. This section stays as a snapshot of what this planning session identified, not a checklist to keep maintaining in two places.

@@ -32,4 +32,4 @@ An [LLM Wiki](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f)
 
 ## Not yet ingested / still living outside the wiki
 
-- `docs/design.md` § Next steps for this Claude Code session — a living TODO checklist, intentionally left as a raw-source section rather than a wiki page since it changes shape faster than the wiki should churn. Re-check it each time the wiki is queried for "what's next."
+- `docs/FEATURES.md` § Deferred / not v1 — the current, authoritative open-items list. Intentionally left outside the wiki as a raw-source-adjacent living checklist rather than a wiki page, since it changes shape faster than the wiki should churn. Re-check it each time the wiki is queried for "what's next." (`docs/design.md` § Next steps was the original home for this and is now a historical snapshot only — see the 2026-08-16 `query` entry in `log.md`.)
