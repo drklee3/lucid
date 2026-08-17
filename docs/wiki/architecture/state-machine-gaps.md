@@ -18,5 +18,3 @@ Symphony's pattern — once an issue is in `Human Review` (outside `active_state
 
 - [Review/rework UX](review-rework-ux.md) — the trigger-mechanism fork this state machine needs to support
 - [Error/stall visibility](error-stall-visibility.md) — what happens when these states aren't surfaced
-
-Source: `docs/design.md` § UX / State-Machine Gap Analysis → State machine.

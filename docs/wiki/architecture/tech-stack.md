@@ -28,5 +28,3 @@ Hermes's own subsystems (its sandbox machinery, its `cron/suggestions.py` patter
 ## Naming note
 
 `lucid` is already a taken crate name on crates.io. Irrelevant for a private/local project — never need to publish there. If this ever goes public, publish under a name like `lucid-orchestrator` without renaming the repo.
-
-Source: `docs/design.md` § High-Level Components & Tech Stack → Implementation language: Rust.

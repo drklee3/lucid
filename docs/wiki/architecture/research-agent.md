@@ -8,5 +8,3 @@ Validates a proposed task before the [PM agent](pm-scope.md) files it. Tiered de
 The Research agent returns a confidence score alongside findings. The PM has a filing threshold below which it discards rather than files — logged to the [rejected-ideas list](dedup-death-loop.md) either way, so it doesn't re-investigate the same idea next wake.
 
 Like the Worker, the Research agent gets no direct tracker credential — see [harness/tracker isolation](harness-tracker-isolation.md).
-
-Source: `docs/design.md` resolved decision #5.

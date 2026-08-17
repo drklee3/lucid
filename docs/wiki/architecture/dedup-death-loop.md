@@ -9,5 +9,3 @@ Before filing, the PM checks three things:
 Any hit blocks filing. Linear itself is the source of truth for this check — no separate local dedup store to keep in sync or lose.
 
 **This is the single most important piece of state in the whole system** — losing it silently reintroduces every idea a human already said no to. Design implication: don't build a local cache of this as an optimization without a very good reason; the live-query property is load-bearing, not incidental.
-
-Source: `docs/design.md` resolved decision #6.

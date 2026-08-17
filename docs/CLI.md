@@ -1,6 +1,6 @@
 # CLI
 
-v1 observability is CLI-only (design.md, Dashboard/observability section) — the web
+v1 observability is CLI-only (see `docs/wiki/architecture/observability.md`) — the web
 dashboard is explicitly deferred. Two commands were resolved as the starting point
 (`start`, `status`); this is the full command tree built out from that, kept to what
 the current architecture actually supports.
@@ -96,7 +96,7 @@ lucid pm wake [--respect-presence] [--dry-run]
 
 Shows the current resolved mode plus each configured source's individual reading —
 useful for debugging exactly why the system is or isn't autonomous (this matters
-given the WSL2 `logind` gap already logged in design.md).
+given the WSL2 `logind` gap already logged in `docs/wiki/architecture/presence-detection.md`).
 
 ```
 lucid presence status [--format table|json]
@@ -115,7 +115,7 @@ last-activity-log  active         -
 
 ## `lucid presence override <mode>`
 
-Sets or clears the explicit override layer (decision #1's top-priority signal).
+Sets or clears the explicit override layer (top-priority signal — see `docs/wiki/architecture/presence-detection.md`).
 
 ```
 lucid presence override active      # force active (never autonomous) until cleared
@@ -140,4 +140,4 @@ never prints secrets, even local-only ones.
 Flagged here rather than silently decided: `lucid stop`'s actual IPC mechanism
 (control socket vs PID+signal), whether `start` should self-daemonize or require an
 external supervisor (systemd unit) in v1, and any command surface for the
-review/rework trigger policy (design.md leaves that decision itself open).
+review/rework trigger policy (`docs/wiki/architecture/review-rework-ux.md` leaves that decision itself open).

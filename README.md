@@ -9,9 +9,8 @@ proposals for you to approve, and dispatches approved work to a coding harness
 (`claude -p`, `codex exec`, or others) in an isolated git worktree — reconciling
 state, retrying, and reporting back the same way it would if you were watching.
 
-Tracker-agnostic, harness-agnostic, model-agnostic by design. See `docs/design.md`
-for the full architecture and resolved decisions, and `docs/research.md` for the
-grounding research behind them.
+Tracker-agnostic, harness-agnostic, model-agnostic by design. See `docs/wiki/index.md`
+for the full architecture, resolved decisions, and grounding research.
 
 ## Status
 

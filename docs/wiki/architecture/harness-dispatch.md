@@ -35,5 +35,3 @@ Anthropic has stated `--bare` (API-key-only) "will become the default for `-p` i
 ## Zero direct tracker access
 
 See [harness/tracker isolation](harness-tracker-isolation.md) — none of these profiles ever get a Linear (or any tracker) credential wired in, regardless of which one is dispatched.
-
-Source: `docs/design.md` resolved decision #8.

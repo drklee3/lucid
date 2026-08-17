@@ -23,5 +23,3 @@ This confirms, in a live tracker rather than an anecdote, exactly the "silent/la
 ## The plausible differentiator
 
 No system surveyed has solved *proactive* stall notification — every one relies on the human noticing or polling a dashboard/log, not on an active push when something goes quiet. Given lucid is already building on Linear (mobile push) specifically to solve the remote-visibility requirement (see [observability](observability.md)), closing this gap — an active "Worker stalled, here's why" push rather than passive dashboard-checking — is a plausible place to actually do better than every system surveyed, not just match them.
-
-Source: `docs/design.md` § UX / State-Machine Gap Analysis → Error/stall visibility.

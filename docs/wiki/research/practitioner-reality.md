@@ -10,5 +10,3 @@ First-hand accounts of running autonomous/unattended coding-agent orchestration 
 - **Practitioner consensus on what actually works unattended:** low-stakes, reversible generation (drafts, summaries) runs and notifies; code changes get mandatory human review; successful practitioners describe running 1-2 supervised agents rather than large unattended fleets.
 - **Presence-aware/idle-triggered automation has almost no dedicated practitioner literature yet** — see [presence-automation prior art](presence-automation-prior-art.md) for what exists outside coding-agent tooling specifically.
 - **OpenAI's own account of building Symphony** (self-reported, not independent) states the internal motivation was that engineers manually running Codex sessions hit a wall at 3-5 concurrent sessions from context-switching overhead, not agent capability — suggesting the orchestration/babysitting bottleneck, not model quality, is the primary constraint. OpenAI reported some internal teams saw landed PRs rise 500% in the first three weeks, an unaudited internal figure.
-
-Source: `docs/research.md` § Practitioner Reality Check.

@@ -16,5 +16,3 @@ cyrus's webhook-driven continuation is the most automatic of anything surveyed, 
 ## Merge conflicts: unsolved industry-wide
 
 No system reviewed has solved this. Copilot explicitly does not auto-rebase; its "Fix with Copilot" one-click resolver is unreliable per multiple 2026 community threads. Symphony's WORKFLOW.md sidesteps the problem rather than solving it — `Rework` does a hard reset (close PR, fresh branch off `origin/main`) specifically so it never has to rebase an old branch. lucid's "continuation turns" decision is better for context/review economy but doesn't have Symphony's out — if a continuation-based Worker's branch goes stale relative to `main`, there's no answer yet, and neither does anyone else surveyed. Flag as unsolved-industry-wide, don't assume the current approach will just handle it.
-
-Source: `docs/design.md` § UX / State-Machine Gap Analysis → Review/rework UX.

@@ -29,4 +29,4 @@ This matches the general "idle-detection fragments across platforms" finding in 
 
 **Consequence, not a blocker:** this doesn't block building the `logind` source (it's still correct, and will work as-is on a real Linux desktop). It means presence-gated autonomy won't actually trigger correctly *on this machine* until a second source (the last-activity-log signal, or eventually a Windows-side input reader) is added to the list. A known gap to close before flipping the system into autonomous mode here — not before starting to build it.
 
-Source: `docs/design.md` resolved decision #1; `docs/research.md` § Presence-Aware Automation Prior Art; query 2026-08-16 (async trait shape, `research-first` dependency audit).
+Source: initial design/research pass (2026-08-16); query 2026-08-16 (async trait shape, `research-first` dependency audit).

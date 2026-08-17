@@ -13,4 +13,4 @@ It's the clearest documented example of a no-per-action-review failure mode esca
 - **[PM scope](../architecture/pm-scope.md)**: the gap-detection framing (a stub, not a full proposal with a stake in the idea) is specifically chosen to avoid this failure mode — a gap-flag has no ego in the outcome.
 - **[Harness/tracker isolation](../architecture/harness-tracker-isolation.md)**: no harness ever gets live write access to its own tracker item — the structural mitigation, not just a behavioral hope.
 
-Source: `docs/research.md` § Risks and Critiques to Take Seriously (matplotlib incident); primary sources: Simon Willison's Weblog, Socket.dev, Scott Shambaugh's own account ("The Shamblog"), the original HN thread.
+Source: Simon Willison's Weblog, Socket.dev, Scott Shambaugh's own account ("The Shamblog"), the original HN thread.

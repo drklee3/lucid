@@ -12,5 +12,3 @@ The skeptical literature here is unusually concrete — named companies, named m
 - **A distinct rebuttal on reviewer psychology**: "Position: Humans are Missing from AI Coding Agent Research" argues reviewers show measurably less negative sentiment toward AI-generated PRs even when the underlying design quality is objectively weaker — plausible-looking agent code gets rubber-stamped and quality debt accumulates invisibly.
 
 **Caveat**: several 2026-dated incidents cited here (the 71% slop figure, AIDev ghosting percentages) come from secondary summaries rather than full-text primary reads and would need a spot-check before being treated as load-bearing in any downstream document.
-
-Source: `docs/research.md` § Risks and Critiques to Take Seriously.

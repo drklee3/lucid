@@ -14,5 +14,3 @@
 ## Conclusion
 
 If a genuine category-(c) proactive-PM agent is wanted, the honest framing is "build it," not "adopt it" — there is no mature open-source or well-adopted commercial project to fork or integrate, and the one small startup doing something adjacent (GitAgents) has not been independently verified. This is the direct grounding for why lucid exists as a build, not an integration.
-
-Source: `docs/research.md` § Is the Proactive-PM Layer Genuinely Novel?

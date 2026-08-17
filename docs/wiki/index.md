@@ -1,6 +1,6 @@
 # lucid wiki index
 
-An [LLM Wiki](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) (Karpathy pattern) — a persistent, compounding knowledge base built from raw sources, not re-derived per query. See the root `CLAUDE.md` for the schema/conventions governing this wiki. Raw sources live at `docs/design.md` and `docs/research.md`; the pages below are decomposed from them, organized by concept.
+An [LLM Wiki](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) (Karpathy pattern) — a persistent, compounding knowledge base, maintained directly rather than re-derived per query. See the root `CLAUDE.md` for the schema/conventions governing this wiki. Pages are organized by concept, one topic per page.
 
 ## Architecture (`architecture/`)
 
@@ -19,6 +19,7 @@ An [LLM Wiki](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f)
 - [review-rework-ux](architecture/review-rework-ux.md) — the undecided auto-resume-vs-explicit-trigger fork
 - [observability](architecture/observability.md) — mobile/notification UX, the deferred-dashboard decision, CLI-first v1
 - [error-stall-visibility](architecture/error-stall-visibility.md) — the most consistent gap across every system surveyed
+- [trace-correlation](architecture/trace-correlation.md) — tagging harness dispatches with OTel resource attributes so tracker items link straight to their trace
 
 ## Research (`research/`)
 
@@ -30,6 +31,6 @@ An [LLM Wiki](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f)
 - [presence-automation-prior-art](research/presence-automation-prior-art.md) — idle/presence-gating outside coding agents
 - [open-questions](research/open-questions.md) — what the research pass left unresolved
 
-## Not yet ingested / still living outside the wiki
+## Living outside the wiki
 
-- `docs/FEATURES.md` § Deferred / not v1 — the current, authoritative open-items list. Intentionally left outside the wiki as a raw-source-adjacent living checklist rather than a wiki page, since it changes shape faster than the wiki should churn. Re-check it each time the wiki is queried for "what's next." (`docs/design.md` § Next steps was the original home for this and is now a historical snapshot only — see the 2026-08-16 `query` entry in `log.md`.)
+- `docs/FEATURES.md` § Deferred / not v1 — the current, authoritative open-items list. Intentionally left outside the wiki as a fast-moving checklist rather than a wiki page, since it changes shape faster than the wiki should churn. Re-check it each time the wiki is queried for "what's next."

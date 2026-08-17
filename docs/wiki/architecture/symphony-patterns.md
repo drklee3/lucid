@@ -17,5 +17,3 @@ OpenAI Symphony (SPEC.md + Elixir reference implementation — see [prior-art la
 3. **Independent validation** — the implementer never validates its own work.
 4. **WORKFLOW.md pattern** — repo-owned agent contract versioned with code; universal praise across systems surveyed.
 5. **Daemon model > CI-triggered** — a long-lived service with retries, reconciliation, stall detection beats a CI-job model.
-
-Source: `docs/design.md` § Symphony SPEC.md — patterns worth stealing directly, § Existing Systems Research.

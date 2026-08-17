@@ -27,5 +27,3 @@ A repo-owned watermark file (`docs/wiki/PM_STATE.md` or a tracker-side equivalen
 - The wiki/ROADMAP if one exists — direction, not just diff.
 
 Cap proposals per wake (recommend 3) — a PM that files 15 issues at 3am is worse than useless, it's a wall the human has to triage past to find the good ones.
-
-Source: `docs/design.md` § Scope Clarification, resolved decision #2.

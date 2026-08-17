@@ -33,5 +33,3 @@
 This same survey is what grounds the [Symphony patterns](../architecture/symphony-patterns.md) borrowed directly (Symphony is the closest analog to the Worker half) and the [state-machine gap analysis](../architecture/state-machine-gaps.md) (Linear Coding Sessions, cyrus, Copilot, Factory, OpenHands, Cursor compared against lucid's design specifically on state machine, review/rework UX, observability, and error visibility).
 
 See [Is the PM layer genuinely novel?](pm-layer-novelty.md) for the verdict this table feeds into.
-
-Source: `docs/design.md` § Existing Systems Research; `docs/research.md` § Landscape Summary.

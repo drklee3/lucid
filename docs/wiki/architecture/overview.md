@@ -51,5 +51,3 @@ Almost everything here is net-new code, deliberately — each piece is small and
 - [PM scope](pm-scope.md)
 - [Symphony patterns](symphony-patterns.md) — what was borrowed directly from prior art
 - [Prior-art landscape](../research/prior-art-landscape.md) — why the PM layer specifically is the novel piece
-
-Source: `docs/design.md` §§ System Concept, Proposed Architecture, High-Level Components & Tech Stack.

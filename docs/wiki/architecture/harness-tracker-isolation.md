@@ -13,5 +13,3 @@ This is a safety property, not just cleanliness: it's the concrete mitigation ag
 ## Also a harness-agnosticism win
 
 None of `claude -p`/`codex exec`/`hermes -p` need Linear (or any tracker) configured at all, so nothing tracker-specific needs to stay in sync across harnesses in [harness dispatch](harness-dispatch.md).
-
-Source: `docs/design.md` resolved decision #7.
