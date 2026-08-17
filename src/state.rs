@@ -5,7 +5,7 @@
 //! and forgetting to handle it somewhere becomes a compile error, not a live bug
 //! discovered the way OpenHands', cyrus's, and Symphony's own state gaps were.
 
-use std::time::Instant;
+use chrono::{DateTime, Utc};
 
 /// Orchestration state, separate from whatever the tracker calls its own statuses
 /// (Symphony's pattern — design.md, "Symphony SPEC.md" section).
@@ -79,7 +79,7 @@ pub struct WorkerRun {
     pub phase: WorkerPhase,
     pub session_id: Option<String>,
     pub retries: u32,
-    pub last_event_at: Instant,
+    pub last_event_at: DateTime<Utc>,
     pub last_error: Option<String>,
 }
 

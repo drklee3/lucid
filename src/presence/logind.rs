@@ -10,9 +10,12 @@
 //! a normal Linux desktop), it just means this source alone is insufficient for
 //! presence-gated autonomy *on this machine* until a second source is added to the
 //! list. Real D-Bus wiring (a `zbus`-backed connection, signal subscription) is not
-//! implemented yet — this is the shape, not the behavior.
+//! implemented yet — this is the shape, not the behavior. On the `PresenceSource`
+//! trait itself being `async` (needed for this D-Bus read), see
+//! docs/wiki/architecture/presence-detection.md.
 
 use super::PresenceSource;
+use async_trait::async_trait;
 use std::time::Duration;
 
 pub struct LogindSource {
@@ -29,16 +32,17 @@ impl LogindSource {
     }
 }
 
+#[async_trait]
 impl PresenceSource for LogindSource {
     fn name(&self) -> &str {
         "logind"
     }
 
-    fn is_idle(&self) -> bool {
+    async fn is_idle(&self) -> bool {
         todo!("read IdleHint over D-Bus")
     }
 
-    fn idle_since(&self) -> Option<Duration> {
+    async fn idle_since(&self) -> Option<Duration> {
         todo!("read IdleSinceHint over D-Bus")
     }
 }

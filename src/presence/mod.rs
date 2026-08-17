@@ -6,16 +6,21 @@
 
 pub mod logind;
 
+use async_trait::async_trait;
 use std::time::Duration;
 
+/// Async: real sources (`logind`) read their idle state over D-Bus, not from a
+/// pre-warmed local cache — see docs/wiki (presence detection) for why this trait
+/// isn't sync-with-a-background-cache instead.
+#[async_trait]
 pub trait PresenceSource: Send + Sync {
     /// Human-readable name for this source, shown in `lucid presence status`.
     fn name(&self) -> &str;
 
-    fn is_idle(&self) -> bool;
+    async fn is_idle(&self) -> bool;
 
     /// How long the source believes the user has been idle, if it can say.
-    fn idle_since(&self) -> Option<Duration>;
+    async fn idle_since(&self) -> Option<Duration>;
 }
 
 /// Composes multiple sources conservatively: idle only if every source agrees.
@@ -28,14 +33,20 @@ impl PresenceSourceList {
         Self { sources }
     }
 
-    pub fn is_idle(&self) -> bool {
-        self.sources.iter().all(|s| s.is_idle())
+    pub async fn is_idle(&self) -> bool {
+        for s in &self.sources {
+            if !s.is_idle().await {
+                return false;
+            }
+        }
+        true
     }
 
-    pub fn readings(&self) -> Vec<(&str, bool, Option<Duration>)> {
-        self.sources
-            .iter()
-            .map(|s| (s.name(), s.is_idle(), s.idle_since()))
-            .collect()
+    pub async fn readings(&self) -> Vec<(&str, bool, Option<Duration>)> {
+        let mut out = Vec::with_capacity(self.sources.len());
+        for s in &self.sources {
+            out.push((s.name(), s.is_idle().await, s.idle_since().await));
+        }
+        out
     }
 }
