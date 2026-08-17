@@ -19,6 +19,11 @@ lucid presence override <mode>       Force presence mode (active | autonomous | 
 
 lucid config validate                Validate the config file without starting anything
 lucid config show                    Print resolved config (secrets redacted)
+
+lucid task list                      List tracker issues in a given decision state
+lucid task approve <issue-id>        Approve an issue for dispatch
+lucid task reject <issue-id>         Reject an issue
+lucid task dispatch-now <issue-id>   Dispatch one already-approved issue immediately
 ```
 
 ## `lucid start`
@@ -132,6 +137,37 @@ lucid config show [--config <path>] [--format toml|json]
 
 `config show` redacts anything that looks like a credential (API keys, tokens) —
 never prints secrets, even local-only ones.
+
+## `lucid task`
+
+A terminal convenience over the tracker's own UI (Linear), not a second source of
+truth — every subcommand goes through the same `TrackerAdapter` the daemon itself
+uses (`set_decision_state`/`query_by_label`), so e.g. `lucid task approve` has the
+identical effect to approving the issue directly in Linear. See
+`docs/wiki/architecture/worker-completion.md`.
+
+```
+lucid task list [--state pending|approved|rejected|done|needs-review] [--format table|json] [--config <path>]
+lucid task approve <issue-id> [--config <path>]
+lucid task reject <issue-id> [--config <path>]
+lucid task dispatch-now <issue-id> [--config <path>]
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--state` | `approved` | Which decision state to list. Only the states with a CLI-reachable meaning today — `StaleClosed` (auto-stale-close, not built yet — see `docs/FEATURES.md` § Tracker adapter) isn't exposed here. |
+| `--format` | `table` | `table` for human reading, `json` for scripting. |
+
+`lucid task approve`/`reject` only change decision state — there's no `--review`
+flag to change `ReviewMode` after creation; that's set once at proposal-filing time
+(`Proposal.review`) and isn't currently updatable from the CLI.
+
+`lucid task dispatch-now <issue-id>` runs the *exact* dispatch path the daemon's
+regular tick would run for that issue (`worker::dispatch_and_finalize`, shared by
+both callers) — it changes **when** approved work runs (now, instead of waiting for
+the next tick + presence gate), never **whether** it's allowed to. It requires the
+issue already be in the `Approved` state in the tracker and errors out otherwise,
+pointing at `lucid task approve` — it is not an independent trigger mechanism.
 
 ---
 

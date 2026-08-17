@@ -9,6 +9,8 @@ cyrus and GitHub Copilot coding agent made opposite defaults, both deliberately:
 
 lucid's resolved decision is "continuation turns, not resets" (correct, and better than Symphony's own reset-on-Rework flow — see [Symphony patterns](symphony-patterns.md)) but that decision never picked a side on *auto-resume vs. explicit-trigger*. Given the [matplotlib incident](../research/matplotlib-incident.md), this is worth deciding deliberately rather than defaulting to whichever is easier to build. **Still open.**
 
+This whole fork assumes a PR exists to review or re-trigger on. [Worker completion](worker-completion.md)'s `CompletionMode::Commit` mode has no PR at all — a successful dispatch lands directly on `main` locally. For that mode this fork doesn't apply; `ReviewMode::Human`/`Agent` are the pre-merge gate instead of a PR review, and there's nothing to "rework" after the fact except approving a fresh dispatch. The fork above still stands for whatever eventual `BranchAndPr` mode gets built.
+
 ## The cautionary tale for however it's built
 
 cyrus's webhook-driven continuation is the most automatic of anything surveyed, but its own open issue tracker documents session-identity bugs adjacent to this exact mechanism. Cursor has the same failure independently: GitHub-issue-triggered follow-ups sometimes spin up a *new* session instead of resuming the old one, breaking the whole point of continuation. Whatever trigger lucid builds needs an explicit, tested session-identity key — not an assumption that "webhook fires → resume the right thread" just works.
