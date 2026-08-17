@@ -1,0 +1,13 @@
+services:
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    ports:
+      - "6006:6006"   # UI + OTLP/HTTP (/v1/traces)
+      - "4317:4317"   # OTLP/gRPC
+    volumes:
+      - phoenix-data:/mnt/data
+    environment:
+      - PHOENIX_WORKING_DIR=/mnt/data
+
+volumes:
+  phoenix-data:

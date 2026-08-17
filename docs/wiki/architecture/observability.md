@@ -18,4 +18,4 @@ Concrete low-cost path for whenever the dashboard is built: Symphony's dashboard
 
 Symphony's stated goal — "CI status, PR review feedback, complexity analysis, and walkthrough videos" attached to the tracker item so a human can approve without re-running anything — and Cursor's pattern of attaching videos/screenshots/logs to the PR are both patterns lucid hasn't adopted yet. Worth adding to the Worker's PR-completion behavior. This stays relevant even with the dashboard deferred, since it's about what lands on the GitHub PR / Linear issue itself, not a dashboard feature.
 
-Source: `docs/design.md` § UX / State-Machine Gap Analysis → Mobile/notification UX, Dashboard/observability.
+One concrete instance of this: see [trace correlation](trace-correlation.md) — tagging each harness dispatch with an OTel resource attribute (`ticket_id` + `dispatch_id`) and posting the resulting trace-query link back to the tracker item, so "why did this run go wrong" is answerable from the ticket itself.
