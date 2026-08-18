@@ -6,7 +6,7 @@ An [LLM Wiki](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f)
 
 - [overview](architecture/overview.md) — system concept, core roles, key constraints, component diagram, the standalone-orchestrator correction
 - [tech-stack](architecture/tech-stack.md) — why Rust, crate choices
-- [presence-detection](architecture/presence-detection.md) — pluggable idle-source interface; verified `logind`-is-dead-on-WSL2 finding
+- [presence-detection](architecture/presence-detection.md) — pluggable idle-source interface; verified `logind`-is-dead-on-WSL2 finding; append-only mode-transition audit log
 - [tracker-adapter](architecture/tracker-adapter.md) — Linear as today's swappable tracker backend
 - [agent-handoff](architecture/agent-handoff.md) — the frontmatter contract the Worker parses deterministically
 - [harness-dispatch](architecture/harness-dispatch.md) — the (harness, auth-mode) profile list, subscription-first

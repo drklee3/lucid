@@ -190,3 +190,7 @@ An adversarial code-review pass (`/code-review high`) on the initial implementat
 Full design detail (worktree lifecycle, PR body/title shape, the three bug fixes, who has merge authority under each `ReviewMode`) is in the rewritten [Worker completion](architecture/worker-completion.md) rather than repeated here; also updated `docs/wiki/index.md`'s summary line and the now-applicable fork framing in [Review/rework UX](architecture/review-rework-ux.md).
 
 `cargo build --release`/`cargo test --release` (63 passing, up from 59 — 4 new tests covering the bug fixes above)/`cargo clippy --release --all-targets -- -D warnings`/`cargo fmt --check`: all clean.
+
+## [2026-08-18] query | Mode-transition audit log documented on presence-detection
+
+Filed back documentation for the `AuditLog` implementation (`src/presence/audit_log.rs`), which satisfies the "log every mode transition" requirement already stated on [presence-detection](architecture/presence-detection.md) but previously left unimplemented. Added a section to that page covering the trigger condition (`daemon::tick()`'s resolved `PresenceMode` differs from the previous tick's), the file location (`presence-audit.log`, sibling of the `presence-override` state file via `AuditLog::default_path_from_override`), the JSONL line format, and the state-vs-history distinction from the override file. No new page — the mechanism is small and tightly coupled to presence resolution already covered on that page, not a distinct concept.
