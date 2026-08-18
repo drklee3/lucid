@@ -282,7 +282,10 @@ async fn reconcile_issue(
     status: Option<pr::PrStatus>,
 ) -> anyhow::Result<()> {
     let (state, note) = match status {
-        Some(pr::PrStatus::Merged) => (DecisionState::Done, "PR merged on GitHub — reconciled to Done."),
+        Some(pr::PrStatus::Merged) => (
+            DecisionState::Done,
+            "PR merged on GitHub — reconciled to Done.",
+        ),
         Some(pr::PrStatus::Closed) => (
             DecisionState::Rejected,
             "PR closed without merging on GitHub — reconciled to Rejected.",
