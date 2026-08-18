@@ -416,8 +416,9 @@ async fn task_dispatch_now(issue_id: &str, config: Option<PathBuf>) -> anyhow::R
         &config.harness_profiles,
         &config.observability,
         &config.daemon.workdir,
+        &config.daemon.worktree_root,
+        &config.daemon.base_branch,
         Duration::from_secs(config.daemon.stall_timeout_secs),
-        config.daemon.completion_mode,
         config.daemon.verify_cmd.as_deref(),
     )
     .await?;

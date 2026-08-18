@@ -22,7 +22,7 @@ use crate::presence::override_file::OverrideFile;
 use crate::presence::{self, PresenceMode, PresenceSourceList};
 use crate::state::WorkerRun;
 use crate::tracker::{DecisionState, TrackerAdapter};
-use crate::worker::{self, CompletionMode};
+use crate::worker;
 use chrono::Utc;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -39,7 +39,8 @@ pub struct Daemon {
     presence_cfg: PresenceConfig,
     override_file: OverrideFile,
     workdir: PathBuf,
-    completion_mode: CompletionMode,
+    base_branch: String,
+    worktree_root: PathBuf,
     verify_cmd: Option<String>,
     tick_interval: Duration,
     stall_timeout: Duration,
@@ -77,7 +78,8 @@ impl Daemon {
             },
             override_file: OverrideFile::new(override_path),
             workdir: config.daemon.workdir.clone(),
-            completion_mode: config.daemon.completion_mode,
+            base_branch: config.daemon.base_branch.clone(),
+            worktree_root: config.daemon.worktree_root.clone(),
             verify_cmd: config.daemon.verify_cmd.clone(),
             tick_interval: Duration::from_secs(config.daemon.tick_interval_secs),
             stall_timeout: Duration::from_secs(config.daemon.stall_timeout_secs),
@@ -164,8 +166,9 @@ impl Daemon {
                 &self.profiles,
                 &self.observability,
                 &self.workdir,
+                &self.worktree_root,
+                &self.base_branch,
                 self.stall_timeout,
-                self.completion_mode,
                 self.verify_cmd.as_deref(),
             )
             .await?;

@@ -10,58 +10,38 @@
 
 use crate::config::ObservabilityConfig;
 use crate::harness::{self, DispatchError, DispatchRequest, HarnessProfile, TelemetryConfig};
+use crate::pr::{self, PullRequest};
 use crate::state::{ClaimState, ClaimedSubstate, WorkerPhase, WorkerRun};
 use crate::tracker::{DecisionState, ReviewMode, TrackerAdapter, TrackerIssue};
+use crate::worktree;
 use chrono::Utc;
-use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::time::Duration;
 
-/// How a successful dispatch's changes get committed — see
-/// docs/wiki/architecture/worker-completion.md. There is no `BranchAndPr` mode:
-/// with no per-issue worktree isolation yet, dispatch runs directly in
-/// `daemon.workdir`, so "land on `main` locally" is the only thing lucid can do
-/// without either scooping up unrelated files in a blind `git add -A` or building
-/// worktree management first.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub enum CompletionMode {
-    /// Today's behavior: lucid doesn't touch git at all. Whatever the harness
-    /// did (or didn't) to the working tree is left as-is.
-    #[default]
-    None,
-    /// The dispatch prompt instructs the harness to commit its own work — it has
-    /// full `auto` tool access and knows its own diff, so the commit message is
-    /// better than anything lucid could synthesize post-hoc. lucid never runs
-    /// `git add`/`git commit` itself: in a shared, non-worktree-isolated
-    /// `workdir`, a blind `git add -A` can't tell the harness's changes apart
-    /// from unrelated in-progress files. lucid only *observes* the result
-    /// (`HEAD` before/after, `git status --porcelain`) and reports it.
-    Commit,
-}
-
 /// Builds the dispatch prompt for a claimed issue: title as a heading, plus the
 /// frontmatter+body handoff surface (see docs/wiki/architecture/agent-handoff.md)
-/// when the tracker has one, plus a commit instruction under `CompletionMode::Commit`.
+/// when the tracker has one, plus a commit instruction — every dispatch runs in
+/// its own worktree/branch now (see `worktree`), so there's no shared-directory
+/// risk left in having the harness commit its own work. lucid pushes the branch
+/// and opens the PR itself (see `pr`), so the harness is explicitly told not to.
 /// Falls back to the bare title for issues created outside `create_proposal` (e.g.
 /// hand-filed tracker items) — the Worker still dispatches, just with less to go on.
 #[must_use]
-pub fn dispatch_prompt(issue: &TrackerIssue, completion_mode: CompletionMode) -> String {
+pub fn dispatch_prompt(issue: &TrackerIssue) -> String {
+    use std::fmt::Write;
     let mut prompt = match &issue.description {
         Some(description) => format!("# {}\n\n{description}", issue.title),
         None => issue.title.clone(),
     };
-    if completion_mode == CompletionMode::Commit {
-        use std::fmt::Write;
-        let _ = write!(
-            prompt,
-            "\n\n---\n\nWhen you're done and confident any acceptance criteria above are \
-             met, commit your changes yourself with `git commit` — one commit or several, \
-             whatever's logically right for the change; include `{}` in at least one commit \
-             message. Do not push, and do not open a pull request. If there's nothing worth \
-             committing, leave the working tree as it is.",
-            issue.id
-        );
-    }
+    let _ = write!(
+        prompt,
+        "\n\n---\n\nWhen you're done and confident any acceptance criteria above are \
+         met, commit your changes yourself with `git commit` — one commit or several, \
+         whatever's logically right for the change; include `{}` in at least one commit \
+         message. Do not push, and do not open a pull request — lucid handles that itself. \
+         If there's nothing worth committing, leave the working tree as it is.",
+        issue.id
+    );
     prompt
 }
 
@@ -84,8 +64,8 @@ pub fn trace_link(observability: &ObservabilityConfig, dispatch_id: &str) -> Str
 }
 
 /// `git rev-parse HEAD` in `workdir`, or `None` if it isn't a git repository (or
-/// `git` isn't on `PATH`) — non-fatal either way, since `CompletionMode::Commit`
-/// is opt-in and a misconfigured `workdir` shouldn't crash the dispatch.
+/// `git` isn't on `PATH`) — non-fatal either way, since a missing `git` binary
+/// shouldn't crash the dispatch itself, only the commit-observation step.
 async fn git_head(workdir: &Path) -> Option<String> {
     let output = tokio::process::Command::new("git")
         .args(["rev-parse", "HEAD"])
@@ -135,9 +115,11 @@ async fn commits_since(workdir: &Path, before: &str) -> Option<Vec<String>> {
     })
 }
 
-/// Describes what happened to the working tree under `CompletionMode::Commit`, by
-/// listing commits made since dispatch started — lucid never runs a git-mutating
-/// command itself here (see `CompletionMode::Commit`'s doc comment for why).
+/// Describes what happened to the worktree since dispatch started, by listing
+/// commits made — every dispatch runs in its own worktree and is told to commit
+/// its own work (see `dispatch_prompt`), so lucid only *observes* the result here
+/// rather than running `git add`/`git commit` itself; pushing and opening the PR
+/// (if there's anything to push) happens separately in `dispatch_and_finalize`.
 async fn describe_commit_result(workdir: &Path, head_before: Option<&str>) -> String {
     let Some(before) = head_before else {
         return "Commit status unknown (not a git repository, or `git` isn't available)."
@@ -154,9 +136,7 @@ async fn describe_commit_result(workdir: &Path, head_before: Option<&str>) -> St
         }
         Some(_) => match git_dirty_file_count(workdir).await {
             Some(0) => "No changes.".to_string(),
-            Some(n) => format!(
-                "Left {n} file(s) uncommitted — lucid doesn't auto-commit (see CompletionMode::Commit)."
-            ),
+            Some(n) => format!("Left {n} file(s) uncommitted — nothing to open a PR for."),
             None => "Commit status unknown (not a git repository, or `git` isn't available)."
                 .to_string(),
         },
@@ -186,8 +166,9 @@ pub async fn run_dispatch(
     observability: &ObservabilityConfig,
     workdir: &Path,
     stall_timeout: Duration,
-    completion_mode: CompletionMode,
 ) -> anyhow::Result<WorkerRun> {
+    use std::fmt::Write as _;
+
     let telemetry = TelemetryConfig {
         otlp_endpoint: observability.otlp_endpoint.clone(),
         log_prompts: observability.log_prompts,
@@ -204,11 +185,7 @@ pub async fn run_dispatch(
         last_error: None,
     };
 
-    let head_before = if completion_mode == CompletionMode::Commit {
-        git_head(workdir).await
-    } else {
-        None
-    };
+    let head_before = git_head(workdir).await;
 
     let outcome = harness::dispatch_with_fallback(DispatchRequest {
         profiles,
@@ -246,11 +223,8 @@ pub async fn run_dispatch(
                 "Dispatch `{}` via `{}` — status: {status_desc}\nTrace: {link}",
                 o.dispatch_id, o.profile_name
             );
-            if completion_mode == CompletionMode::Commit {
-                use std::fmt::Write;
-                let commit_status = describe_commit_result(workdir, head_before.as_deref()).await;
-                let _ = write!(note, "\n{commit_status}");
-            }
+            let commit_status = describe_commit_result(workdir, head_before.as_deref()).await;
+            let _ = write!(note, "\n{commit_status}");
             note
         }
         Err(e) => {
@@ -277,50 +251,153 @@ pub async fn run_dispatch(
     Ok(run)
 }
 
-/// Dispatches one already-`Approved` issue end to end: builds the prompt, runs the
-/// harness, and finalizes the tracker's decision state per `issue.review`. Shared by
-/// `daemon::dispatch_approved_issues` (the regular presence-gated tick) and
-/// `lucid task dispatch-now` (an on-demand trigger of the *exact same* path, not a
-/// separate one — see docs/wiki/architecture/worker-completion.md).
+/// Dispatches one already-`Approved` issue end to end: creates its worktree,
+/// builds the prompt, runs the harness inside that worktree, pushes+opens a PR for
+/// whatever it committed, finalizes the tracker's decision state per
+/// `issue.review` (merging the PR when that decision is `Done`), and always tears
+/// the worktree back down. Shared by `daemon::dispatch_approved_issues` (the
+/// regular presence-gated tick) and `lucid task dispatch-now` (an on-demand
+/// trigger of the *exact same* path, not a separate one) — see
+/// docs/wiki/architecture/worker-completion.md.
 ///
 /// # Errors
-/// Returns an error if `run_dispatch` or `finalize_completion` does (tracker calls
-/// failing, not a normal dispatch failure — see their own docs).
+/// Returns an error if creating the worktree fails, or if `run_dispatch`/
+/// `finalize_completion` does (tracker calls failing, not a normal dispatch
+/// failure — see their own docs). Worktree teardown failures are logged to
+/// stderr, not propagated — by the time cleanup runs, the dispatch's actual
+/// outcome has already been decided and recorded.
 #[allow(clippy::too_many_arguments)]
 pub async fn dispatch_and_finalize(
     tracker: &dyn TrackerAdapter,
     issue: &TrackerIssue,
     profiles: &[HarnessProfile],
     observability: &ObservabilityConfig,
-    workdir: &Path,
+    repo_root: &Path,
+    worktree_root: &Path,
+    base_branch: &str,
     stall_timeout: Duration,
-    completion_mode: CompletionMode,
     verify_cmd: Option<&str>,
 ) -> anyhow::Result<WorkerRun> {
-    let prompt = dispatch_prompt(issue, completion_mode);
+    let wt = worktree::create(repo_root, worktree_root, base_branch, &issue.id).await?;
+
+    let outcome = dispatch_and_review_in_worktree(
+        tracker,
+        issue,
+        profiles,
+        observability,
+        repo_root,
+        &wt,
+        base_branch,
+        stall_timeout,
+        verify_cmd,
+    )
+    .await;
+
+    // Deliberately removed *before* `finalize_completion` below: `pr::merge`'s
+    // `gh pr merge --delete-branch` can't clean up a branch that's still checked
+    // out in this worktree (`gh` surfaces that as a merge failure), so the merge
+    // step has to run only after the checkout backing it is gone. Errors here are
+    // logged, not propagated — by this point the dispatch's actual outcome (`run`,
+    // below) has already been decided.
+    if let Err(e) = worktree::remove(repo_root, &wt).await {
+        eprintln!(
+            "warning: failed to remove worktree {}: {e}",
+            wt.path.display()
+        );
+    }
+
+    let (run, verdict, pr_outcome) = outcome?;
+    if let Some(verdict) = verdict {
+        finalize_completion(tracker, issue, verdict, repo_root, &pr_outcome).await?;
+    }
+    Ok(run)
+}
+
+/// The inner half of `dispatch_and_finalize` that actually needs the worktree
+/// alive: runs the harness, pushes+opens a PR for whatever it committed, and
+/// decides *what the outcome should be* (`ReviewVerdict`) — but never merges. The
+/// merge is deferred to `finalize_completion`, called only after the worktree
+/// this ran in has been torn down (see `dispatch_and_finalize`).
+#[allow(clippy::too_many_arguments)]
+async fn dispatch_and_review_in_worktree(
+    tracker: &dyn TrackerAdapter,
+    issue: &TrackerIssue,
+    profiles: &[HarnessProfile],
+    observability: &ObservabilityConfig,
+    repo_root: &Path,
+    wt: &worktree::WorktreeHandle,
+    base_branch: &str,
+    stall_timeout: Duration,
+    verify_cmd: Option<&str>,
+) -> anyhow::Result<(WorkerRun, Option<ReviewVerdict>, PrOutcome)> {
+    let prompt = dispatch_prompt(issue);
+    let head_before = git_head(&wt.path).await;
     let run = run_dispatch(
         tracker,
         &issue.id,
         &prompt,
         profiles,
         observability,
-        workdir,
+        &wt.path,
         stall_timeout,
-        completion_mode,
     )
     .await?;
-    finalize_completion(
+
+    if run.phase != WorkerPhase::Succeeded {
+        return Ok((run, None, PrOutcome::NoChanges));
+    }
+
+    let has_commits = match head_before.as_deref() {
+        Some(before) => commits_since(&wt.path, before)
+            .await
+            .is_some_and(|c| !c.is_empty()),
+        None => false,
+    };
+    let pr_outcome = if has_commits {
+        match open_pr(repo_root, wt, base_branch, issue).await {
+            Ok(pr) => {
+                tracker
+                    .attach_note(&issue.id, &format!("Opened PR: {}", pr.url))
+                    .await?;
+                PrOutcome::Created(pr)
+            }
+            Err(e) => {
+                tracker
+                    .attach_note(&issue.id, &format!("Failed to open a PR: {e}"))
+                    .await?;
+                PrOutcome::Failed
+            }
+        }
+    } else {
+        PrOutcome::NoChanges
+    };
+
+    let verdict = decide_review(
         tracker,
         issue,
-        &run,
         profiles,
         observability,
-        workdir,
+        &wt.path,
         stall_timeout,
         verify_cmd,
     )
     .await?;
-    Ok(run)
+
+    Ok((run, Some(verdict), pr_outcome))
+}
+
+/// Pushes `wt.branch` and opens its PR — the title is the issue title, the body
+/// links back to the tracker item so a human clicking through from GitHub has
+/// context without needing to already have the ticket open.
+async fn open_pr(
+    repo_root: &Path,
+    wt: &worktree::WorktreeHandle,
+    base_branch: &str,
+    issue: &TrackerIssue,
+) -> anyhow::Result<PullRequest> {
+    pr::push_branch(&wt.path, &wt.branch).await?;
+    let body = format!("Dispatched by lucid for tracker item `{}`.", issue.id);
+    pr::create(repo_root, &wt.branch, base_branch, &issue.title, &body).await
 }
 
 /// A second, read-only dispatch that reviews a `ReviewMode::Agent` issue's pending
@@ -427,42 +504,48 @@ fn resolve_verify_cmd(issue: &TrackerIssue, repo_default: Option<&str>) -> Optio
         .or_else(|| repo_default.map(str::to_string))
 }
 
-/// Decides what a successful dispatch means for the tracker item — the completion
-/// half of "how does a Worker finish a task" (see
-/// docs/wiki/architecture/worker-completion.md). Never called for a `Failed`/
-/// `TimedOut` run: the issue's `DecisionState` stays `Approved` so the daemon's
-/// existing retry path (`daemon::dispatch_approved_issues`) picks it back up.
+/// What a `Succeeded` run's review step decided the tracker item's outcome should
+/// be — computed by `decide_review` *before* any PR merge is attempted. Kept
+/// distinct from the actual `DecisionState` transition (`finalize_completion`)
+/// because the merge that `CloseAutomatically` implies has to wait until the
+/// worktree it was reviewed in is gone (see `dispatch_and_finalize`).
+#[derive(Debug)]
+enum ReviewVerdict {
+    CloseAutomatically,
+    NeedsHuman,
+}
+
+/// What happened to the PR for a `Succeeded` run — distinguishes "nothing to
+/// merge" from "something went wrong opening it," so a dispatch that committed
+/// real work but failed to push/open a PR can never be silently treated as if it
+/// had made no changes at all (see `mark_done`).
+enum PrOutcome {
+    NoChanges,
+    Created(PullRequest),
+    Failed,
+}
+
+/// Decides what a `Succeeded` dispatch means for the tracker item, per
+/// `issue.review` — the review half of "how does a Worker finish a task" (see
+/// docs/wiki/architecture/worker-completion.md). Doesn't touch `DecisionState`
+/// itself; see `finalize_completion` for that.
 ///
 /// # Errors
 /// Returns an error if a tracker call fails, or (for `ReviewMode::Agent`) if the
 /// review dispatch itself fails to even run — a review that ran but returned an
-/// unparseable verdict is *not* an error, it routes to `NeedsReview` instead.
-#[allow(clippy::too_many_arguments)]
-pub async fn finalize_completion(
+/// unparseable verdict is *not* an error, it resolves to `NeedsHuman` instead.
+async fn decide_review(
     tracker: &dyn TrackerAdapter,
     issue: &TrackerIssue,
-    run: &WorkerRun,
     profiles: &[HarnessProfile],
     observability: &ObservabilityConfig,
     workdir: &Path,
     stall_timeout: Duration,
     verify_cmd: Option<&str>,
-) -> anyhow::Result<()> {
-    if run.phase != WorkerPhase::Succeeded {
-        return Ok(());
-    }
-
+) -> anyhow::Result<ReviewVerdict> {
     match issue.review {
-        ReviewMode::Auto => {
-            tracker
-                .set_decision_state(&issue.id, DecisionState::Done)
-                .await
-        }
-        ReviewMode::Human => {
-            tracker
-                .set_decision_state(&issue.id, DecisionState::NeedsReview)
-                .await
-        }
+        ReviewMode::Auto => Ok(ReviewVerdict::CloseAutomatically),
+        ReviewMode::Human => Ok(ReviewVerdict::NeedsHuman),
         ReviewMode::Agent => {
             let verify_cmd = resolve_verify_cmd(issue, verify_cmd);
             if let Some(cmd) = &verify_cmd {
@@ -475,9 +558,7 @@ pub async fn finalize_completion(
                                 &format!("Verify command `{cmd}` failed (nonzero exit)."),
                             )
                             .await?;
-                        return tracker
-                            .set_decision_state(&issue.id, DecisionState::NeedsReview)
-                            .await;
+                        return Ok(ReviewVerdict::NeedsHuman);
                     }
                     Err(e) => {
                         tracker
@@ -486,9 +567,7 @@ pub async fn finalize_completion(
                                 &format!("Verify command `{cmd}` couldn't run: {e}"),
                             )
                             .await?;
-                        return tracker
-                            .set_decision_state(&issue.id, DecisionState::NeedsReview)
-                            .await;
+                        return Ok(ReviewVerdict::NeedsHuman);
                     }
                 }
             }
@@ -496,12 +575,79 @@ pub async fn finalize_completion(
             let (verdict, note) =
                 agent_review(issue, profiles, observability, workdir, stall_timeout).await?;
             tracker.attach_note(&issue.id, &note).await?;
-            let state = if verdict == Some(true) {
-                DecisionState::Done
+            Ok(if verdict == Some(true) {
+                ReviewVerdict::CloseAutomatically
             } else {
-                DecisionState::NeedsReview
-            };
-            tracker.set_decision_state(&issue.id, state).await
+                ReviewVerdict::NeedsHuman
+            })
+        }
+    }
+}
+
+/// Turns a `ReviewVerdict` into the tracker's actual `DecisionState` — split out
+/// from `decide_review` so the merge `CloseAutomatically` can trigger
+/// (`mark_done`) always runs after the worktree the PR came from has been torn
+/// down (see `dispatch_and_finalize`'s call ordering).
+///
+/// # Errors
+/// Returns an error only if a tracker call fails.
+async fn finalize_completion(
+    tracker: &dyn TrackerAdapter,
+    issue: &TrackerIssue,
+    verdict: ReviewVerdict,
+    repo_root: &Path,
+    pr_outcome: &PrOutcome,
+) -> anyhow::Result<()> {
+    match verdict {
+        ReviewVerdict::NeedsHuman => {
+            tracker
+                .set_decision_state(&issue.id, DecisionState::NeedsReview)
+                .await
+        }
+        ReviewVerdict::CloseAutomatically => mark_done(tracker, issue, repo_root, pr_outcome).await,
+    }
+}
+
+/// The only place lucid ever merges a PR — reached solely from `ReviewVerdict::
+/// CloseAutomatically`, i.e. exactly the two review outcomes (`ReviewMode::Auto`,
+/// or a `PASS`ed `ReviewMode::Agent`) that already meant "close this out without
+/// a human" before PRs existed. A merge failure (conflict, unmet branch
+/// protection, required check still pending) is never retried or resolved
+/// automatically: it routes to `NeedsReview` with `gh`'s own message attached,
+/// leaving the PR open for a human — see docs/wiki/architecture/worker-completion.md
+/// § who merges. `PrOutcome::Failed` (the dispatch committed real work, but lucid
+/// couldn't push/open a PR for it) routes to `NeedsReview` the same way, rather
+/// than being treated as if there had been nothing to merge — an unreviewed,
+/// possibly-unpushed commit must never silently read back as `Done`.
+async fn mark_done(
+    tracker: &dyn TrackerAdapter,
+    issue: &TrackerIssue,
+    repo_root: &Path,
+    pr_outcome: &PrOutcome,
+) -> anyhow::Result<()> {
+    match pr_outcome {
+        PrOutcome::NoChanges => {
+            tracker
+                .set_decision_state(&issue.id, DecisionState::Done)
+                .await
+        }
+        PrOutcome::Failed => {
+            tracker
+                .set_decision_state(&issue.id, DecisionState::NeedsReview)
+                .await
+        }
+        PrOutcome::Created(pr) => {
+            if let Err(e) = pr::merge(repo_root, &pr.branch).await {
+                tracker
+                    .attach_note(&issue.id, &format!("Could not merge PR {}: {e}", pr.url))
+                    .await?;
+                return tracker
+                    .set_decision_state(&issue.id, DecisionState::NeedsReview)
+                    .await;
+            }
+            tracker
+                .set_decision_state(&issue.id, DecisionState::Done)
+                .await
         }
     }
 }
@@ -575,28 +721,13 @@ mod tests {
             decision_state: None,
             review: crate::tracker::ReviewMode::Auto,
         };
-        let prompt = dispatch_prompt(&issue, CompletionMode::None);
+        let prompt = dispatch_prompt(&issue);
         assert!(prompt.starts_with("# Fix presence detection\n\n"));
         assert!(prompt.contains("IdleHint never resets."));
     }
 
     #[test]
-    fn dispatch_prompt_falls_back_to_the_title_without_a_description() {
-        let issue = TrackerIssue {
-            id: "ENG-2".into(),
-            title: "Hand-filed issue".into(),
-            description: None,
-            decision_state: None,
-            review: crate::tracker::ReviewMode::Auto,
-        };
-        assert_eq!(
-            dispatch_prompt(&issue, CompletionMode::None),
-            "Hand-filed issue"
-        );
-    }
-
-    #[test]
-    fn dispatch_prompt_appends_a_commit_instruction_under_commit_mode() {
+    fn dispatch_prompt_appends_a_commit_instruction() {
         let issue = TrackerIssue {
             id: "ENG-4".into(),
             title: "Hand-filed issue".into(),
@@ -604,10 +735,12 @@ mod tests {
             decision_state: None,
             review: crate::tracker::ReviewMode::Auto,
         };
-        let prompt = dispatch_prompt(&issue, CompletionMode::Commit);
+        let prompt = dispatch_prompt(&issue);
+        assert!(prompt.starts_with("Hand-filed issue"));
         assert!(prompt.contains("git commit"));
         assert!(prompt.contains("ENG-4"));
         assert!(prompt.contains("Do not push"));
+        assert!(prompt.contains("lucid handles that itself"));
     }
 
     #[test]
@@ -639,7 +772,6 @@ mod tests {
             &observability(),
             &std::env::temp_dir(),
             Duration::from_secs(5),
-            CompletionMode::None,
         )
         .await
         .unwrap();
@@ -675,7 +807,6 @@ mod tests {
             &observability(),
             &std::env::temp_dir(),
             Duration::from_secs(5),
-            CompletionMode::None,
         )
         .await
         .unwrap();
@@ -697,7 +828,6 @@ mod tests {
             &observability(),
             &std::env::temp_dir(),
             Duration::from_secs(5),
-            CompletionMode::None,
         )
         .await
         .unwrap();
@@ -710,7 +840,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn commit_mode_reports_a_new_commit_in_the_note() {
+    async fn run_dispatch_reports_a_new_commit_in_the_note() {
         let workdir =
             std::env::temp_dir().join(format!("lucid-commit-mode-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&workdir).unwrap();
@@ -730,9 +860,9 @@ mod tests {
 
         let tracker = MockTracker::default();
         // Rather than spawning a real harness, the fake profile's own shell script
-        // makes the commit that a real dispatch under `CompletionMode::Commit`
-        // would have made — the point under test is `run_dispatch` *observing* it
-        // via `HEAD` before/after, not the (already-covered) prompt instruction.
+        // makes the commit a real harness dispatch would have made — the point under
+        // test is `run_dispatch` *observing* it via `HEAD` before/after, not the
+        // (already-covered) prompt instruction.
         let profiles = [HarnessProfile {
             name: "fake-claude".into(),
             kind: HarnessKind::ClaudeCode,
@@ -753,7 +883,6 @@ mod tests {
             &observability(),
             &workdir,
             Duration::from_secs(5),
-            CompletionMode::Commit,
         )
         .await
         .unwrap();
@@ -767,7 +896,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn commit_mode_reports_every_commit_not_just_the_last() {
+    async fn run_dispatch_reports_every_commit_not_just_the_last() {
         let workdir =
             std::env::temp_dir().join(format!("lucid-multi-commit-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&workdir).unwrap();
@@ -807,7 +936,6 @@ mod tests {
             &observability(),
             &workdir,
             Duration::from_secs(5),
-            CompletionMode::Commit,
         )
         .await
         .unwrap();
@@ -822,7 +950,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn finalize_completion_auto_marks_done() {
+    async fn decide_review_auto_closes_automatically() {
         let tracker = MockTracker::default();
         let issue = TrackerIssue {
             id: "ENG-6".into(),
@@ -831,20 +959,9 @@ mod tests {
             decision_state: Some(DecisionState::Approved),
             review: ReviewMode::Auto,
         };
-        let run = WorkerRun {
-            issue_id: "ENG-6".into(),
-            claim: ClaimState::Released,
-            phase: WorkerPhase::Succeeded,
-            session_id: None,
-            dispatch_id: None,
-            retries: 0,
-            last_event_at: Utc::now(),
-            last_error: None,
-        };
-        finalize_completion(
+        let verdict = decide_review(
             &tracker,
             &issue,
-            &run,
             &[],
             &observability(),
             &std::env::temp_dir(),
@@ -853,14 +970,11 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(
-            *tracker.decisions.lock().unwrap(),
-            vec![("ENG-6".to_string(), DecisionState::Done)]
-        );
+        assert!(matches!(verdict, ReviewVerdict::CloseAutomatically));
     }
 
     #[tokio::test]
-    async fn finalize_completion_human_needs_review() {
+    async fn decide_review_human_needs_human() {
         let tracker = MockTracker::default();
         let issue = TrackerIssue {
             id: "ENG-7".into(),
@@ -869,67 +983,121 @@ mod tests {
             decision_state: Some(DecisionState::Approved),
             review: ReviewMode::Human,
         };
-        let run = WorkerRun {
-            issue_id: "ENG-7".into(),
-            claim: ClaimState::Released,
-            phase: WorkerPhase::Succeeded,
-            session_id: None,
-            dispatch_id: None,
-            retries: 0,
-            last_event_at: Utc::now(),
-            last_error: None,
-        };
-        finalize_completion(
+        let verdict = decide_review(
             &tracker,
             &issue,
-            &run,
             &[],
             &observability(),
             &std::env::temp_dir(),
             Duration::from_secs(5),
             None,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(verdict, ReviewVerdict::NeedsHuman));
+    }
+
+    #[tokio::test]
+    async fn finalize_completion_close_automatically_no_changes_marks_done() {
+        let tracker = MockTracker::default();
+        let issue = plain_issue("ENG-30", None);
+        finalize_completion(
+            &tracker,
+            &issue,
+            ReviewVerdict::CloseAutomatically,
+            &std::env::temp_dir(),
+            &PrOutcome::NoChanges,
         )
         .await
         .unwrap();
         assert_eq!(
             *tracker.decisions.lock().unwrap(),
-            vec![("ENG-7".to_string(), DecisionState::NeedsReview)]
+            vec![("ENG-30".to_string(), DecisionState::Done)]
         );
     }
 
     #[tokio::test]
-    async fn finalize_completion_skips_non_succeeded_runs() {
+    async fn finalize_completion_needs_human_sets_needs_review() {
         let tracker = MockTracker::default();
-        let issue = TrackerIssue {
-            id: "ENG-8".into(),
-            title: "t".into(),
-            description: None,
-            decision_state: Some(DecisionState::Approved),
-            review: ReviewMode::Auto,
-        };
-        let run = WorkerRun {
-            issue_id: "ENG-8".into(),
-            claim: ClaimState::Released,
-            phase: WorkerPhase::Failed,
-            session_id: None,
-            dispatch_id: None,
-            retries: 0,
-            last_event_at: Utc::now(),
-            last_error: None,
-        };
+        let issue = plain_issue("ENG-31", None);
         finalize_completion(
             &tracker,
             &issue,
-            &run,
-            &[],
-            &observability(),
+            ReviewVerdict::NeedsHuman,
             &std::env::temp_dir(),
-            Duration::from_secs(5),
-            None,
+            &PrOutcome::NoChanges,
         )
         .await
         .unwrap();
-        assert!(tracker.decisions.lock().unwrap().is_empty());
+        assert_eq!(
+            *tracker.decisions.lock().unwrap(),
+            vec![("ENG-31".to_string(), DecisionState::NeedsReview)]
+        );
+    }
+
+    /// Regression test: a dispatch that committed real work but failed to push or
+    /// open a PR for it (`PrOutcome::Failed`) must never read back as `Done` just
+    /// because there's no PR to merge — that would silently drop the work with no
+    /// review and no record of where it landed.
+    #[tokio::test]
+    async fn finalize_completion_pr_open_failure_needs_review_not_done() {
+        let tracker = MockTracker::default();
+        let issue = plain_issue("ENG-32", None);
+        finalize_completion(
+            &tracker,
+            &issue,
+            ReviewVerdict::CloseAutomatically,
+            &std::env::temp_dir(),
+            &PrOutcome::Failed,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            *tracker.decisions.lock().unwrap(),
+            vec![("ENG-32".to_string(), DecisionState::NeedsReview)]
+        );
+    }
+
+    /// `gh` isn't configured for a plain scratch repo with no remote, so `pr::merge`
+    /// fails — exercising the "merge itself failed" path without needing real
+    /// GitHub access. Must route to `NeedsReview`, never silently to `Done`.
+    #[tokio::test]
+    async fn finalize_completion_merge_failure_needs_review() {
+        let repo_root =
+            std::env::temp_dir().join(format!("lucid-mark-done-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&repo_root).unwrap();
+        std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&repo_root)
+            .output()
+            .unwrap();
+
+        let tracker = MockTracker::default();
+        let issue = plain_issue("ENG-33", None);
+        let pr_outcome = PrOutcome::Created(PullRequest {
+            url: "https://example.invalid/pr/1".to_string(),
+            branch: "lucid/ENG-33".to_string(),
+        });
+        finalize_completion(
+            &tracker,
+            &issue,
+            ReviewVerdict::CloseAutomatically,
+            &repo_root,
+            &pr_outcome,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            *tracker.decisions.lock().unwrap(),
+            vec![("ENG-33".to_string(), DecisionState::NeedsReview)]
+        );
+        assert!(
+            tracker.notes.lock().unwrap()[0]
+                .1
+                .contains("Could not merge PR")
+        );
+
+        let _ = std::fs::remove_dir_all(&repo_root);
     }
 
     #[test]
@@ -940,19 +1108,6 @@ mod tests {
             Some(false)
         );
         assert_eq!(parse_verdict("no verdict here").0, None);
-    }
-
-    fn succeeded_run(issue_id: &str) -> WorkerRun {
-        WorkerRun {
-            issue_id: issue_id.to_string(),
-            claim: ClaimState::Released,
-            phase: WorkerPhase::Succeeded,
-            session_id: None,
-            dispatch_id: None,
-            retries: 0,
-            last_event_at: Utc::now(),
-            last_error: None,
-        }
     }
 
     fn plain_issue(id: &str, description: Option<&str>) -> TrackerIssue {
@@ -990,7 +1145,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn finalize_completion_agent_verify_cmd_failure_skips_review_and_needs_review() {
+    async fn decide_review_agent_verify_cmd_failure_skips_review_and_needs_human() {
         let tracker = MockTracker::default();
         let issue = TrackerIssue {
             id: "ENG-10".into(),
@@ -1002,10 +1157,9 @@ mod tests {
         // Empty profiles: if verify_cmd's failure didn't short-circuit before the
         // LLM review dispatch, agent_review would hit DispatchError::NoProfiles and
         // this call would return Err — asserting Ok proves the review never ran.
-        finalize_completion(
+        let verdict = decide_review(
             &tracker,
             &issue,
-            &succeeded_run("ENG-10"),
             &[],
             &observability(),
             &std::env::temp_dir(),
@@ -1014,10 +1168,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(
-            *tracker.decisions.lock().unwrap(),
-            vec![("ENG-10".to_string(), DecisionState::NeedsReview)]
-        );
+        assert!(matches!(verdict, ReviewVerdict::NeedsHuman));
         assert!(
             tracker.notes.lock().unwrap()[0]
                 .1
@@ -1026,7 +1177,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn finalize_completion_agent_verify_cmd_pass_then_llm_verdict_decides() {
+    async fn decide_review_agent_verify_cmd_pass_then_llm_verdict_decides() {
         let tracker = MockTracker::default();
         let issue = TrackerIssue {
             id: "ENG-11".into(),
@@ -1051,10 +1202,9 @@ mod tests {
             priority: 1,
         }];
 
-        finalize_completion(
+        let verdict = decide_review(
             &tracker,
             &issue,
-            &succeeded_run("ENG-11"),
             &profiles,
             &observability(),
             &std::env::temp_dir(),
@@ -1063,9 +1213,6 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(
-            *tracker.decisions.lock().unwrap(),
-            vec![("ENG-11".to_string(), DecisionState::Done)]
-        );
+        assert!(matches!(verdict, ReviewVerdict::CloseAutomatically));
     }
 }

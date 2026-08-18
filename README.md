@@ -21,14 +21,19 @@ prototype, but not feature-complete either:
 
 - ✅ Presence-gated reconciliation loop (`lucid start`), PM gap-detection wake,
   Claude Code dispatch with block/timeout handling, file-backed and real Linear
-  tracker adapters, OTel trace correlation back to the tracker item.
-- ⛔ No per-issue git worktree isolation yet (dispatch runs in one configured
-  directory), no cross-process `status`/`stop` (needs an IPC layer, not designed
-  yet), state is in-memory only (no restart persistence).
+  tracker adapters, OTel trace correlation back to the tracker item, per-issue git
+  worktree isolation with PR-based completion (every dispatch gets its own
+  branch/worktree; `lucid` pushes and opens a PR via `gh`, merging it itself when
+  `ReviewMode` says the task can close without a human).
+- ⛔ No cross-process `status`/`stop` (needs an IPC layer, not designed yet),
+  state is in-memory only (no restart persistence).
 
 See [`docs/FEATURES.md`](docs/FEATURES.md) for the itemized breakdown.
 
 ## Quickstart
+
+Requires `git` and an authenticated [`gh`](https://cli.github.com/) on `PATH` —
+every dispatch pushes a branch and opens/merges its PR through `gh`.
 
 ```bash
 cargo build --release
@@ -120,6 +125,7 @@ subscription profile plus an API-key fallback) run in `priority` order.
 | `tick_interval_secs` | integer | `30` | How often the reconciliation loop checks presence and dispatches approved issues. |
 | `stall_timeout_secs` | integer | `600` | Hard wall-clock limit before a harness process is killed and marked `TimedOut`. |
 | `pm_wake_interval_mins` | integer | `60` | Minimum time between PM gap-detection wake cycles while autonomous. |
-| `workdir` | string | `"."` | Directory dispatched harnesses run in. No per-issue worktree isolation yet — see [`docs/FEATURES.md`](docs/FEATURES.md). |
-| `completion_mode` | `"None"` \| `"Commit"` | `"None"` | `Commit` has the harness commit its own work; lucid never runs `git add`/`git commit` itself, only observes the result. |
+| `workdir` | string | `"."` | The main repo checkout. Every dispatch's worktree branches off `base_branch`'s tip here, and this is where `gh pr create`/`gh pr merge` run from. |
+| `base_branch` | string | `"main"` | Branch each dispatch's worktree is created from, and PRs target. |
+| `worktree_root` | string | system temp dir | Where per-issue worktrees are created — kept outside `workdir` so they never show up in the main repo's own `git status`. |
 | `verify_cmd` | string | unset | Repo-wide default command for `ReviewMode::Agent`'s verify step (e.g. `cargo test`); a per-task `verify_cmd` overrides it. |

@@ -14,7 +14,7 @@ use lucid::config::ObservabilityConfig;
 use lucid::harness::{AuthMode, HarnessKind, HarnessProfile};
 use lucid::tracker::file::FileTracker;
 use lucid::tracker::{DecisionState, EffortEstimate, Proposal, ReviewMode, TrackerAdapter};
-use lucid::worker::{self, CompletionMode};
+use lucid::worker;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -40,21 +40,25 @@ async fn main() -> anyhow::Result<()> {
         trace_ui_project_id: None,
     };
 
-    // A real git repo, so CompletionMode::Commit has something to observe —
-    // dispatch runs directly in `workdir` (no worktree isolation yet), so this
-    // mirrors what `daemon.workdir` needs to be for that mode today.
+    // A real git repo, checked out on `main` — every dispatch's worktree
+    // branches off this tip (see `worktree::create`). No `origin` remote here, so
+    // `gh pr create` will fail; `dispatch_and_finalize` degrades gracefully in
+    // that case (attaches a note, skips the merge, still lands on `Done`) rather
+    // than failing the whole dispatch — this smoke test exercises that path too.
     let run_git = |args: &[&str]| {
         std::process::Command::new("git")
             .args(args)
             .current_dir(&workdir)
             .output()
     };
-    run_git(&["init", "-q"])?;
+    run_git(&["init", "-q", "-b", "main"])?;
     run_git(&["config", "user.email", "smoke@example.com"])?;
     run_git(&["config", "user.name", "smoke"])?;
     std::fs::write(workdir.join("README.md"), "smoke\n")?;
     run_git(&["add", "-A"])?;
     run_git(&["commit", "-q", "-m", "init"])?;
+
+    let worktree_root = std::env::temp_dir().join("lucid-e2e-smoke-worktrees");
 
     // Files a full proposal (title + frontmatter/body handoff surface) and
     // approves it — exercises the same create_proposal -> set_decision_state ->
@@ -86,20 +90,26 @@ async fn main() -> anyhow::Result<()> {
         .find(|i| i.id == issue_id)
         .expect("just-approved issue should be visible to query_by_label");
 
-    let completion_mode = CompletionMode::Commit;
-    let prompt = worker::dispatch_prompt(&issue, completion_mode);
-    println!("--- dispatch prompt ---\n{prompt}\n");
+    println!(
+        "--- dispatch prompt ---\n{}\n",
+        worker::dispatch_prompt(&issue)
+    );
 
-    println!("dispatching against {}", workdir.display());
-    let run = worker::run_dispatch(
+    println!(
+        "dispatching against {} (worktree under {})",
+        workdir.display(),
+        worktree_root.display()
+    );
+    let run = worker::dispatch_and_finalize(
         &tracker,
-        &issue.id,
-        &prompt,
+        &issue,
         &profiles,
         &observability,
         &workdir,
+        &worktree_root,
+        "main",
         std::time::Duration::from_secs(120),
-        completion_mode,
+        None,
     )
     .await?;
 
@@ -108,18 +118,6 @@ async fn main() -> anyhow::Result<()> {
     println!("dispatch_id: {:?}", run.dispatch_id);
     println!("session_id:  {:?}", run.session_id);
     println!("last_error:  {:?}", run.last_error);
-
-    worker::finalize_completion(
-        &tracker,
-        &issue,
-        &run,
-        &profiles,
-        &observability,
-        &workdir,
-        std::time::Duration::from_secs(120),
-        None,
-    )
-    .await?;
 
     let final_state = tracker
         .query_similar(&issue.title)

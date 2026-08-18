@@ -2,7 +2,6 @@
 //! the daemon's own tick/timeout knobs.
 
 use crate::harness::HarnessProfile;
-use crate::worker::CompletionMode;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -90,16 +89,21 @@ pub struct DaemonConfig {
     /// Minimum time between PM gap-detection wake cycles while autonomous.
     #[serde(default = "default_pm_wake_interval_mins")]
     pub pm_wake_interval_mins: u64,
-    /// Directory dispatched harnesses run in. A git worktree once worktree
-    /// management exists (docs/FEATURES.md § Worker / dispatch); any directory
-    /// works for now — defaults to the current directory.
+    /// The main repo checkout — every dispatch's worktree branches off
+    /// `base_branch`'s tip here, and this is also where `gh pr create`/`gh pr
+    /// merge` run from. Defaults to the current directory.
     #[serde(default = "default_workdir")]
     pub workdir: PathBuf,
-    /// How a successful dispatch's changes get committed — see
-    /// docs/wiki/architecture/worker-completion.md. Defaults to `None`: lucid
-    /// doesn't touch git, matching every behavior before this field existed.
-    #[serde(default)]
-    pub completion_mode: CompletionMode,
+    /// Branch each dispatch's worktree is created from, and PRs target — see
+    /// docs/wiki/architecture/worker-completion.md. Defaults to `"main"`.
+    #[serde(default = "default_base_branch")]
+    pub base_branch: String,
+    /// Where per-issue worktrees are created (see `worktree::create`) —
+    /// deliberately outside `workdir` so they never show up in the main repo's own
+    /// `git status`. Defaults to a `lucid-worktrees` directory under the system
+    /// temp dir.
+    #[serde(default = "default_worktree_root")]
+    pub worktree_root: PathBuf,
     /// Repo-wide default for `ReviewMode::Agent`'s deterministic verify step (see
     /// docs/wiki/architecture/worker-completion.md) — the common case is one
     /// command that's true for every task in a repo (e.g. `cargo test`), same as
@@ -118,7 +122,8 @@ impl Default for DaemonConfig {
             stall_timeout_secs: default_stall_timeout_secs(),
             pm_wake_interval_mins: default_pm_wake_interval_mins(),
             workdir: default_workdir(),
-            completion_mode: CompletionMode::default(),
+            base_branch: default_base_branch(),
+            worktree_root: default_worktree_root(),
             verify_cmd: None,
         }
     }
@@ -138,6 +143,14 @@ fn default_pm_wake_interval_mins() -> u64 {
 
 fn default_workdir() -> PathBuf {
     PathBuf::from(".")
+}
+
+fn default_base_branch() -> String {
+    "main".to_string()
+}
+
+fn default_worktree_root() -> PathBuf {
+    std::env::temp_dir().join("lucid-worktrees")
 }
 
 /// `$XDG_STATE_HOME/lucid/presence-override`, falling back to
