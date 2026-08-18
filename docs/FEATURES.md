@@ -60,6 +60,7 @@ listed separately and are explicitly out of v1.
 - [ ] `lucid status` / `lucid show` — blocked on the same undesigned IPC; `Daemon::runs_snapshot` exists for an in-process caller but nothing cross-process reads it yet
 - [x] `lucid presence status` / `lucid presence override` / `lucid pm wake` / `lucid config validate` / `lucid config show`
 - [x] `lucid task list` / `approve` / `reject` / `dispatch-now` — a terminal convenience over the tracker's own UI, not a second source of truth: every subcommand is a thin call through the same `TrackerAdapter` (`query_by_label`/`set_decision_state`) the daemon itself uses. `dispatch-now` runs the daemon's exact dispatch path (`worker::dispatch_and_finalize`, now shared between `daemon.rs` and the CLI) on demand for one already-`Approved` issue — it changes *when* approved work runs, never *whether* (see `docs/wiki/architecture/worker-completion.md`)
+- [x] `lucid task create` — files a new `Proposal` via `TrackerAdapter::create_proposal` directly from the CLI, printing the new issue id. The real write path for `Proposal.review`/`Proposal.verify_cmd`: previously the only ways to set either were hand-editing a ticket's frontmatter text or constructing a `Proposal` struct in Rust (`examples/e2e_smoke.rs`). Skips `pm::wake`'s `query_similar` dedup check by design — a human typing a title explicitly isn't the re-filing case dedup guards against.
 - [x] Full command tree, flags, and output formats: see `docs/CLI.md`
 
 ## Reconciliation loop

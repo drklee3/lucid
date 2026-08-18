@@ -20,6 +20,7 @@ lucid presence override <mode>       Force presence mode (active | autonomous | 
 lucid config validate                Validate the config file without starting anything
 lucid config show                    Print resolved config (secrets redacted)
 
+lucid task create <title>            File a new proposal directly
 lucid task list                      List tracker issues in a given decision state
 lucid task approve <issue-id>        Approve an issue for dispatch
 lucid task reject <issue-id>         Reject an issue
@@ -147,6 +148,10 @@ identical effect to approving the issue directly in Linear. See
 `docs/wiki/architecture/worker-completion.md`.
 
 ```
+lucid task create <title> [--summary <text>] [--why-now <text>]... [--effort small|medium|large]
+                   [--risk-note <text>] [--task-type <text>] [--target-path <path>]...
+                   [--acceptance-criteria <text>]... [--review auto|human|agent]
+                   [--verify-cmd <cmd>] [--config <path>]
 lucid task list [--state pending|approved|rejected|done|needs-review] [--format table|json] [--config <path>]
 lucid task approve <issue-id> [--config <path>]
 lucid task reject <issue-id> [--config <path>]
@@ -158,9 +163,27 @@ lucid task dispatch-now <issue-id> [--config <path>]
 | `--state` | `approved` | Which decision state to list. Only the states with a CLI-reachable meaning today — `StaleClosed` (auto-stale-close, not built yet — see `docs/FEATURES.md` § Tracker adapter) isn't exposed here. |
 | `--format` | `table` | `table` for human reading, `json` for scripting. |
 
+`lucid task create` files a new `Proposal` directly through the tracker adapter —
+the same `create_proposal` write path `pm::wake` uses, without its
+`query_similar` dedup check (a human typing a title explicitly isn't the
+runaway re-filing case that check guards against). Every flag but `<title>` is
+optional: `--summary` defaults to the title, `--effort` defaults to `medium`,
+`--task-type` defaults to `task`, `--review` defaults to `auto`. `--why-now`,
+`--target-path`, and `--acceptance-criteria` are each repeatable. On success it
+prints the new issue id (e.g. `LOCAL-1` for the file backend) — pass that id to
+`lucid task approve`. This is the only CLI path that sets `Proposal.review` or
+`Proposal.verify_cmd` (see `docs/wiki/architecture/worker-completion.md`); once
+filed, neither is updatable except by hand-editing the ticket.
+
+On the Linear backend, `--review agent` requires the `review:agent` label to
+already exist in the workspace — `LinearAdapter::label_id` never creates
+labels, so `task create` fails with Linear's own "label not found" error if it
+doesn't. Create the label in Linear first.
+
 `lucid task approve`/`reject` only change decision state — there's no `--review`
 flag to change `ReviewMode` after creation; that's set once at proposal-filing time
-(`Proposal.review`) and isn't currently updatable from the CLI.
+(`Proposal.review`, now settable via `lucid task create --review`) and isn't
+currently updatable from the CLI afterward.
 
 `lucid task dispatch-now <issue-id>` runs the *exact* dispatch path the daemon's
 regular tick would run for that issue (`worker::dispatch_and_finalize`, shared by
