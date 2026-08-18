@@ -20,19 +20,30 @@ use std::time::Duration;
 
 /// Builds the dispatch prompt for a claimed issue: title as a heading, plus the
 /// frontmatter+body handoff surface (see docs/wiki/architecture/agent-handoff.md)
-/// when the tracker has one, plus a commit instruction — every dispatch runs in
-/// its own worktree/branch now (see `worktree`), so there's no shared-directory
-/// risk left in having the harness commit its own work. lucid pushes the branch
-/// and opens the PR itself (see `pr`), so the harness is explicitly told not to.
-/// Falls back to the bare title for issues created outside `create_proposal` (e.g.
-/// hand-filed tracker items) — the Worker still dispatches, just with less to go on.
+/// when the tracker has one, plus a `## Comments` section when `comments` is
+/// non-empty, plus a commit instruction — every dispatch runs in its own
+/// worktree/branch now (see `worktree`), so there's no shared-directory risk left
+/// in having the harness commit its own work. lucid pushes the branch and opens
+/// the PR itself (see `pr`), so the harness is explicitly told not to. Falls back
+/// to the bare title for issues created outside `create_proposal` (e.g. hand-filed
+/// tracker items) — the Worker still dispatches, just with less to go on.
+///
+/// `comments` is a parameter rather than fetched here so this stays a pure
+/// function — the caller fetches fresh via `TrackerAdapter::list_comments` right
+/// before dispatch, every time, per docs/wiki/architecture/human-in-the-loop.md.
 #[must_use]
-pub fn dispatch_prompt(issue: &TrackerIssue) -> String {
+pub fn dispatch_prompt(issue: &TrackerIssue, comments: &[String]) -> String {
     use std::fmt::Write;
     let mut prompt = match &issue.description {
         Some(description) => format!("# {}\n\n{description}", issue.title),
         None => issue.title.clone(),
     };
+    if !comments.is_empty() {
+        prompt.push_str("\n\n## Comments\n\n");
+        for comment in comments {
+            let _ = writeln!(prompt, "- {comment}");
+        }
+    }
     let _ = write!(
         prompt,
         "\n\n---\n\nWhen you're done and confident any acceptance criteria above are \
@@ -330,7 +341,8 @@ async fn dispatch_and_review_in_worktree(
     stall_timeout: Duration,
     verify_cmd: Option<&str>,
 ) -> anyhow::Result<(WorkerRun, Option<ReviewVerdict>, PrOutcome)> {
-    let prompt = dispatch_prompt(issue);
+    let comments = tracker.list_comments(&issue.id).await?;
+    let prompt = dispatch_prompt(issue, &comments);
     let head_before = git_head(&wt.path).await;
     let run = run_dispatch(
         tracker,
@@ -701,6 +713,9 @@ mod tests {
                 .push((issue_id.to_string(), body.to_string()));
             Ok(())
         }
+        async fn list_comments(&self, _issue_id: &str) -> anyhow::Result<Vec<String>> {
+            Ok(Vec::new())
+        }
     }
 
     fn observability() -> ObservabilityConfig {
@@ -721,7 +736,7 @@ mod tests {
             decision_state: None,
             review: crate::tracker::ReviewMode::Auto,
         };
-        let prompt = dispatch_prompt(&issue);
+        let prompt = dispatch_prompt(&issue, &[]);
         assert!(prompt.starts_with("# Fix presence detection\n\n"));
         assert!(prompt.contains("IdleHint never resets."));
     }
@@ -735,12 +750,44 @@ mod tests {
             decision_state: None,
             review: crate::tracker::ReviewMode::Auto,
         };
-        let prompt = dispatch_prompt(&issue);
+        let prompt = dispatch_prompt(&issue, &[]);
         assert!(prompt.starts_with("Hand-filed issue"));
         assert!(prompt.contains("git commit"));
         assert!(prompt.contains("ENG-4"));
         assert!(prompt.contains("Do not push"));
         assert!(prompt.contains("lucid handles that itself"));
+    }
+
+    #[test]
+    fn dispatch_prompt_includes_a_comments_section_when_comments_are_non_empty() {
+        let issue = TrackerIssue {
+            id: "ENG-40".into(),
+            title: "Add a widget".into(),
+            description: Some("do the thing".into()),
+            decision_state: None,
+            review: crate::tracker::ReviewMode::Auto,
+        };
+        let comments = vec![
+            "tzushi: clarify to only touch src/foo.rs".to_string(),
+            "lucid: Dispatch abc — status: exit 0".to_string(),
+        ];
+        let prompt = dispatch_prompt(&issue, &comments);
+        assert!(prompt.contains("## Comments"));
+        assert!(prompt.contains("- tzushi: clarify to only touch src/foo.rs"));
+        assert!(prompt.contains("- lucid: Dispatch abc — status: exit 0"));
+    }
+
+    #[test]
+    fn dispatch_prompt_omits_the_comments_section_when_comments_are_empty() {
+        let issue = TrackerIssue {
+            id: "ENG-41".into(),
+            title: "Add a widget".into(),
+            description: Some("do the thing".into()),
+            decision_state: None,
+            review: crate::tracker::ReviewMode::Auto,
+        };
+        let prompt = dispatch_prompt(&issue, &[]);
+        assert!(!prompt.contains("## Comments"));
     }
 
     #[test]

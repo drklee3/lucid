@@ -8,7 +8,7 @@
 
 use super::{
     DecisionState, Proposal, ReviewMode, TrackerAdapter, TrackerIssue, decision_state_from_name,
-    decision_state_name, render_description, review_from_label, review_label,
+    decision_state_name, render_comment, render_description, review_from_label, review_label,
 };
 use anyhow::{Context, anyhow, bail};
 use async_trait::async_trait;
@@ -425,6 +425,46 @@ impl TrackerAdapter for LinearAdapter {
         }
         Ok(())
     }
+
+    /// Fetched fresh on every dispatch, never cached or delta-tracked — see
+    /// docs/wiki/architecture/human-in-the-loop.md.
+    async fn list_comments(&self, issue_id: &str) -> anyhow::Result<Vec<String>> {
+        const QUERY: &str = r"
+            query IssueComments($id: String!, $first: Int!, $after: String) {
+              issue(id: $id) {
+                comments(first: $first, after: $after, orderBy: createdAt) {
+                  nodes { body user { name } }
+                  pageInfo { hasNextPage endCursor }
+                }
+              }
+            }
+        ";
+
+        let mut collected = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let data: IssueCommentsData = self
+                .graphql(
+                    QUERY,
+                    json!({ "id": issue_id, "first": PAGE_SIZE, "after": cursor }),
+                )
+                .await?;
+
+            collected.extend(data.issue.comments.nodes.into_iter().map(|c| {
+                let author = c.user.map_or_else(|| "unknown".to_string(), |u| u.name);
+                render_comment(&author, &c.body)
+            }));
+
+            if !data.issue.comments.page_info.has_next_page {
+                break;
+            }
+            cursor = data.issue.comments.page_info.end_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        Ok(collected)
+    }
 }
 
 const TEAM_ID_QUERY: &str = r"
@@ -609,6 +649,35 @@ struct CommentCreateData {
     comment_create: SuccessPayload,
 }
 
+#[derive(Deserialize)]
+struct CommentUser {
+    name: String,
+}
+
+#[derive(Deserialize)]
+struct CommentNode {
+    body: String,
+    #[serde(default)]
+    user: Option<CommentUser>,
+}
+
+#[derive(Deserialize)]
+struct CommentConnection {
+    nodes: Vec<CommentNode>,
+    #[serde(rename = "pageInfo")]
+    page_info: PageInfo,
+}
+
+#[derive(Deserialize)]
+struct IssueComments {
+    comments: CommentConnection,
+}
+
+#[derive(Deserialize)]
+struct IssueCommentsData {
+    issue: IssueComments,
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::EffortEstimate;
@@ -741,6 +810,41 @@ mod tests {
                 "team": { "key": { "eq": "ENG" } },
                 "project": { "name": { "eq": "Lucid" } },
             })
+        );
+    }
+
+    #[test]
+    fn issue_comments_render_with_author_name() {
+        let data: IssueCommentsData = serde_json::from_value(json!({
+            "issue": {
+                "comments": {
+                    "nodes": [
+                        { "body": "clarify to only touch src/foo.rs", "user": { "name": "tzushi" } },
+                        { "body": "no author on this one", "user": null },
+                    ],
+                    "pageInfo": { "hasNextPage": false, "endCursor": null },
+                }
+            }
+        }))
+        .expect("issue comments data");
+
+        let rendered: Vec<_> = data
+            .issue
+            .comments
+            .nodes
+            .into_iter()
+            .map(|c| {
+                let author = c.user.map_or_else(|| "unknown".to_string(), |u| u.name);
+                render_comment(&author, &c.body)
+            })
+            .collect();
+
+        assert_eq!(
+            rendered,
+            vec![
+                "tzushi: clarify to only touch src/foo.rs".to_string(),
+                "unknown: no author on this one".to_string(),
+            ]
         );
     }
 

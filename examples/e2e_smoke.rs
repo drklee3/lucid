@@ -90,9 +90,10 @@ async fn main() -> anyhow::Result<()> {
         .find(|i| i.id == issue_id)
         .expect("just-approved issue should be visible to query_by_label");
 
+    let comments = tracker.list_comments(&issue.id).await?;
     println!(
         "--- dispatch prompt ---\n{}\n",
-        worker::dispatch_prompt(&issue)
+        worker::dispatch_prompt(&issue, &comments)
     );
 
     println!(

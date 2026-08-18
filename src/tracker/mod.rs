@@ -170,6 +170,13 @@ pub trait TrackerAdapter: Send + Sync {
     /// docs/wiki/architecture/trace-correlation.md). Never used to change decision
     /// state; that stays `set_decision_state`'s job.
     async fn attach_note(&self, issue_id: &str, body: &str) -> anyhow::Result<()>;
+
+    /// The issue's full comment thread, oldest first, each entry rendered with its
+    /// author (e.g. `"tzushi: clarify to only touch src/foo.rs"`) — the read-back
+    /// counterpart to `attach_note`. Includes lucid's own past notes mixed in with
+    /// human comments; see docs/wiki/architecture/human-in-the-loop.md for why
+    /// callers must not filter them out.
+    async fn list_comments(&self, issue_id: &str) -> anyhow::Result<Vec<String>>;
 }
 
 /// Builds the configured `TrackerAdapter` — the one place `backend` strings get
@@ -292,6 +299,14 @@ pub fn frontmatter_field(description: Option<&str>, key: &str) -> Option<String>
         }
     }
     None
+}
+
+/// Renders one comment/note into the `"{author}: {body}"` shape both
+/// `TrackerAdapter::list_comments` implementations share — see
+/// docs/wiki/architecture/human-in-the-loop.md.
+#[must_use]
+pub fn render_comment(author: &str, body: &str) -> String {
+    format!("{author}: {body}")
 }
 
 fn yaml_scalar(value: &str) -> String {
