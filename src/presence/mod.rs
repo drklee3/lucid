@@ -10,9 +10,10 @@ pub mod override_file;
 
 use async_trait::async_trait;
 use override_file::{OverrideFile, OverrideMode};
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PresenceMode {
     Active,
     Autonomous,

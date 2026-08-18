@@ -12,7 +12,7 @@ No dashboard plan exists for v1, and that's an explicit decision, not an oversig
 
 **v1 observability is CLI-only**, modeled on the same content Symphony's dashboard shows (running/blocked/retrying agents, see [Symphony patterns](symphony-patterns.md)) but rendered as terminal output: one command starts the daemon, a second lists/inspects active agents — `ps`-for-agents, Symphony's Blocked/Retrying/Running table content as CLI output. Linear (see [tracker adapter](tracker-adapter.md)) is the async, periodic check-in surface (proposal review, gap-flags); the CLI is for live "what's happening right now." A web dashboard becomes a real ask once/if CLI-checking-in becomes the bottleneck, not before.
 
-Concrete low-cost path for whenever the dashboard is built: Symphony's dashboard content model (Blocked table with last-error, Retry Queue table, Running table, color-coded state badges) is a fully specified, proven-rough draft — worth adopting the shape rather than designing one from scratch. State persistence for this (surviving a restart, unlike Symphony's own in-memory blocked map) is why `rusqlite` was chosen — see [tech stack](tech-stack.md).
+Concrete low-cost path for whenever the dashboard is built: Symphony's dashboard content model (Blocked table with last-error, Retry Queue table, Running table, color-coded state badges) is a fully specified, proven-rough draft — worth adopting the shape rather than designing one from scratch. `Daemon.runs` already survives a restart (unlike Symphony's own in-memory blocked map) via `DaemonState`'s flat-file persistence — see [persistence](persistence.md) — so a future dashboard would read from state that's already durable, not need to add durability itself.
 
 ## Proof-of-work artifacts
 

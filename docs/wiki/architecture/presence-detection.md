@@ -18,7 +18,7 @@ Debounce the transition itself (require idle sustained for the full threshold, n
 
 The override file (`config::default_override_path`, e.g. `$XDG_STATE_HOME/lucid/presence-override`) holds current decision state — what the orchestrator would read *right now* to know the active override, if any. It gets overwritten in place; it has no memory of what it used to say.
 
-The audit log is the complementary append-only history. `AuditLog` (`src/presence/audit_log.rs`) lives at a fixed sibling path, `presence-audit.log` in the same directory as the override file (`AuditLog::default_path_from_override`). Every call to `daemon::tick()` resolves a `PresenceMode` (`Active` or `Autonomous`) and compares it against the mode resolved on the previous tick. A line is appended only when the two differ:
+The audit log is the complementary append-only history. `AuditLog` (`src/presence/audit_log.rs`) lives at a fixed sibling path, `presence-audit.log` in the same directory as the override file (`AuditLog::default_path_from_override`). Both files, plus the daemon's own reconciliation-state file, follow the same flat-file-over-database convention — see [persistence](persistence.md) for the full picture across all of them, including why each one handles a corrupt file differently. Every call to `daemon::tick()` resolves a `PresenceMode` (`Active` or `Autonomous`) and compares it against the mode resolved on the previous tick. A line is appended only when the two differ:
 
 ```json
 {"timestamp":"2026-08-18T12:34:56Z","from":"active","to":"autonomous"}
