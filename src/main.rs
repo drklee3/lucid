@@ -15,6 +15,10 @@ use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Best-effort: a missing .env (the common case in prod/CI, where secrets come
+    // from the real environment) isn't an error.
+    let _ = dotenvy::dotenv();
+
     let cli = Cli::parse();
 
     match cli.command {
