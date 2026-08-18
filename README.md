@@ -33,8 +33,24 @@ See [`docs/FEATURES.md`](docs/FEATURES.md) for the itemized breakdown.
 ```bash
 cargo build --release
 
-# minimal config — see docs/CLI.md for every field
-cat > lucid.toml <<'EOF'
+# write lucid.toml — see Configuration below for what goes in it
+docker compose up -d          # optional: Arize Phoenix, for trace correlation
+./target/release/lucid config validate
+./target/release/lucid presence override autonomous   # logind auto-detection isn't wired up yet
+./target/release/lucid start --foreground
+```
+
+Full command reference: [`docs/CLI.md`](docs/CLI.md).
+
+## Configuration
+
+`lucid` reads a single TOML file, resolved in this order: `--config <path>`,
+then `./lucid.toml`, then `$XDG_CONFIG_HOME/lucid/config.toml`. Validate it
+with `lucid config validate` before starting the daemon.
+
+Minimal working example (file-backed tracker, no Linear credentials needed):
+
+```toml
 [[harness_profiles]]
 name = "claude-subscription"
 kind = "ClaudeCode"
@@ -54,12 +70,56 @@ proposal_cap_per_wake = 3
 [observability]
 otlp_endpoint = "http://localhost:4317"
 trace_ui_base_url = "http://localhost:6006"
-EOF
-
-docker compose up -d          # optional: Arize Phoenix, for trace correlation
-./target/release/lucid config validate
-./target/release/lucid presence override autonomous   # logind auto-detection isn't wired up yet
-./target/release/lucid start --foreground
 ```
 
-Full command reference: [`docs/CLI.md`](docs/CLI.md).
+### `[[harness_profiles]]`
+
+One entry per dispatch target; multiple profiles for the same harness (e.g. a
+subscription profile plus an API-key fallback) run in `priority` order.
+
+| Field | Type | Notes |
+|---|---|---|
+| `name` | string | Free-form label, shown in dispatch logs/status. |
+| `kind` | `"ClaudeCode"` \| `"Codex"` | Which harness binary this profile drives. |
+| `cmd` | string | The binary to invoke (e.g. `claude`, `codex`). |
+| `args` | string[] | Static args; the task prompt is appended at dispatch time. |
+| `auth_mode` | `"Subscription"` \| `"ApiKey"` | `Subscription` reads the harness's existing login; `ApiKey` forces metered billing (e.g. `ANTHROPIC_API_KEY`/`OPENAI_API_KEY`). |
+| `priority` | integer | Lower runs first. |
+
+### `[tracker]`
+
+| Field | Type | Notes |
+|---|---|---|
+| `backend` | `"file"` \| `"linear"` | `file` needs no credentials; `linear` talks to Linear's real GraphQL API. |
+| `file_path` | string | Required for `backend = "file"`. Where the JSON store lives. |
+| `api_key_env` | string | Required for `backend = "linear"`. Env var holding the API key (e.g. `LINEAR_API_KEY`). |
+| `team_key` | string | Required for `backend = "linear"`. Linear's short team key (e.g. `ENG`), not its UUID. |
+| `project_key` | string | Optional, `linear` only. Scopes lucid to one Linear project within `team_key` — Linear issues don't require a project, so omitting this operates team-wide. |
+
+### `[presence]`
+
+| Field | Type | Notes |
+|---|---|---|
+| `idle_threshold_minutes` | integer | Minutes of sustained idle before flipping to autonomous mode. |
+| `proposal_cap_per_wake` | integer | Max proposals a single PM wake cycle may file. |
+| `override_path` | string | Optional. Defaults to `$XDG_STATE_HOME/lucid/presence-override` (or `~/.local/state/...`). |
+
+### `[observability]`
+
+| Field | Type | Notes |
+|---|---|---|
+| `otlp_endpoint` | string | Where dispatched harnesses send OTel traces/logs (e.g. Phoenix's `http://localhost:4317`). |
+| `trace_ui_base_url` | string | Base URL of the trace UI, used to build the trace link posted back to the tracker item. |
+| `trace_ui_project_id` | string | Optional. Falls back to `"default"` (Phoenix's default project). |
+| `log_prompts` | bool | Optional, defaults to `false`. Opt-in prompt/tool-content capture — this is the point where the trace store starts holding sensitive content. |
+
+### `[daemon]` (optional — every field has a default)
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `tick_interval_secs` | integer | `30` | How often the reconciliation loop checks presence and dispatches approved issues. |
+| `stall_timeout_secs` | integer | `600` | Hard wall-clock limit before a harness process is killed and marked `TimedOut`. |
+| `pm_wake_interval_mins` | integer | `60` | Minimum time between PM gap-detection wake cycles while autonomous. |
+| `workdir` | string | `"."` | Directory dispatched harnesses run in. No per-issue worktree isolation yet — see [`docs/FEATURES.md`](docs/FEATURES.md). |
+| `completion_mode` | `"None"` \| `"Commit"` | `"None"` | `Commit` has the harness commit its own work; lucid never runs `git add`/`git commit` itself, only observes the result. |
+| `verify_cmd` | string | unset | Repo-wide default command for `ReviewMode::Agent`'s verify step (e.g. `cargo test`); a per-task `verify_cmd` overrides it. |
