@@ -43,7 +43,12 @@ async fn main() -> anyhow::Result<()> {
     // A real git repo, so CompletionMode::Commit has something to observe —
     // dispatch runs directly in `workdir` (no worktree isolation yet), so this
     // mirrors what `daemon.workdir` needs to be for that mode today.
-    let run_git = |args: &[&str]| std::process::Command::new("git").args(args).current_dir(&workdir).output();
+    let run_git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(&workdir)
+            .output()
+    };
     run_git(&["init", "-q"])?;
     run_git(&["config", "user.email", "smoke@example.com"])?;
     run_git(&["config", "user.name", "smoke"])?;
@@ -69,9 +74,13 @@ async fn main() -> anyhow::Result<()> {
         verify_cmd: None,
     };
     let issue_id = tracker.create_proposal(&proposal).await?;
-    tracker.set_decision_state(&issue_id, DecisionState::Approved).await?;
+    tracker
+        .set_decision_state(&issue_id, DecisionState::Approved)
+        .await?;
 
-    let approved = tracker.query_by_decision_state(DecisionState::Approved).await?;
+    let approved = tracker
+        .query_by_decision_state(DecisionState::Approved)
+        .await?;
     let issue = approved
         .into_iter()
         .find(|i| i.id == issue_id)

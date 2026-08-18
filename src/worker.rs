@@ -160,8 +160,9 @@ async fn describe_commit_result(workdir: &Path, head_before: Option<&str>) -> St
             None => "Commit status unknown (not a git repository, or `git` isn't available)."
                 .to_string(),
         },
-        None => "Commit status unknown (not a git repository, or `git` isn't available)."
-            .to_string(),
+        None => {
+            "Commit status unknown (not a git repository, or `git` isn't available).".to_string()
+        }
     }
 }
 
@@ -256,7 +257,10 @@ pub async fn run_dispatch(
             // A timeout is a distinct, retriable state (`TimedOut`), not a plain
             // task failure — the reconciliation loop's retry policy treats these
             // differently (see docs/FEATURES.md § Reconciliation loop).
-            run.phase = if matches!(e.downcast_ref::<DispatchError>(), Some(DispatchError::Timeout { .. })) {
+            run.phase = if matches!(
+                e.downcast_ref::<DispatchError>(),
+                Some(DispatchError::Timeout { .. })
+            ) {
                 WorkerPhase::TimedOut
             } else {
                 WorkerPhase::Failed
@@ -449,7 +453,11 @@ pub async fn finalize_completion(
     }
 
     match issue.review {
-        ReviewMode::Auto => tracker.set_decision_state(&issue.id, DecisionState::Done).await,
+        ReviewMode::Auto => {
+            tracker
+                .set_decision_state(&issue.id, DecisionState::Done)
+                .await
+        }
         ReviewMode::Human => {
             tracker
                 .set_decision_state(&issue.id, DecisionState::NeedsReview)
@@ -462,7 +470,10 @@ pub async fn finalize_completion(
                     Ok(true) => {} // falls through to the diff/acceptance-criteria review below
                     Ok(false) => {
                         tracker
-                            .attach_note(&issue.id, &format!("Verify command `{cmd}` failed (nonzero exit)."))
+                            .attach_note(
+                                &issue.id,
+                                &format!("Verify command `{cmd}` failed (nonzero exit)."),
+                            )
                             .await?;
                         return tracker
                             .set_decision_state(&issue.id, DecisionState::NeedsReview)
@@ -470,7 +481,10 @@ pub async fn finalize_completion(
                     }
                     Err(e) => {
                         tracker
-                            .attach_note(&issue.id, &format!("Verify command `{cmd}` couldn't run: {e}"))
+                            .attach_note(
+                                &issue.id,
+                                &format!("Verify command `{cmd}` couldn't run: {e}"),
+                            )
                             .await?;
                         return tracker
                             .set_decision_state(&issue.id, DecisionState::NeedsReview)
@@ -514,14 +528,21 @@ mod tests {
         async fn create_proposal(&self, _proposal: &Proposal) -> anyhow::Result<String> {
             unimplemented!("not exercised by these tests")
         }
-        async fn set_decision_state(&self, issue_id: &str, state: DecisionState) -> anyhow::Result<()> {
+        async fn set_decision_state(
+            &self,
+            issue_id: &str,
+            state: DecisionState,
+        ) -> anyhow::Result<()> {
             self.decisions
                 .lock()
                 .unwrap()
                 .push((issue_id.to_string(), state));
             Ok(())
         }
-        async fn query_by_decision_state(&self, _state: DecisionState) -> anyhow::Result<Vec<TrackerIssue>> {
+        async fn query_by_decision_state(
+            &self,
+            _state: DecisionState,
+        ) -> anyhow::Result<Vec<TrackerIssue>> {
             unimplemented!("not exercised by these tests")
         }
         async fn query_similar(&self, _title: &str) -> anyhow::Result<Vec<TrackerIssue>> {
@@ -568,7 +589,10 @@ mod tests {
             decision_state: None,
             review: crate::tracker::ReviewMode::Auto,
         };
-        assert_eq!(dispatch_prompt(&issue, CompletionMode::None), "Hand-filed issue");
+        assert_eq!(
+            dispatch_prompt(&issue, CompletionMode::None),
+            "Hand-filed issue"
+        );
     }
 
     #[test]
@@ -687,7 +711,8 @@ mod tests {
 
     #[tokio::test]
     async fn commit_mode_reports_a_new_commit_in_the_note() {
-        let workdir = std::env::temp_dir().join(format!("lucid-commit-mode-test-{}", uuid::Uuid::new_v4()));
+        let workdir =
+            std::env::temp_dir().join(format!("lucid-commit-mode-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&workdir).unwrap();
         let run_git = |args: &[&str]| {
             std::process::Command::new("git")
@@ -743,7 +768,8 @@ mod tests {
 
     #[tokio::test]
     async fn commit_mode_reports_every_commit_not_just_the_last() {
-        let workdir = std::env::temp_dir().join(format!("lucid-multi-commit-test-{}", uuid::Uuid::new_v4()));
+        let workdir =
+            std::env::temp_dir().join(format!("lucid-multi-commit-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&workdir).unwrap();
         let run_git = |args: &[&str]| {
             std::process::Command::new("git")
@@ -827,7 +853,10 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(*tracker.decisions.lock().unwrap(), vec![("ENG-6".to_string(), DecisionState::Done)]);
+        assert_eq!(
+            *tracker.decisions.lock().unwrap(),
+            vec![("ENG-6".to_string(), DecisionState::Done)]
+        );
     }
 
     #[tokio::test]
@@ -989,7 +1018,11 @@ mod tests {
             *tracker.decisions.lock().unwrap(),
             vec![("ENG-10".to_string(), DecisionState::NeedsReview)]
         );
-        assert!(tracker.notes.lock().unwrap()[0].1.contains("Verify command `false` failed"));
+        assert!(
+            tracker.notes.lock().unwrap()[0]
+                .1
+                .contains("Verify command `false` failed")
+        );
     }
 
     #[tokio::test]

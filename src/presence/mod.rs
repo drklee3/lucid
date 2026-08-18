@@ -132,7 +132,9 @@ mod tests {
     }
 
     fn override_file() -> OverrideFile {
-        OverrideFile::new(std::env::temp_dir().join(format!("lucid-resolve-test-{}", uuid::Uuid::new_v4())))
+        OverrideFile::new(
+            std::env::temp_dir().join(format!("lucid-resolve-test-{}", uuid::Uuid::new_v4())),
+        )
     }
 
     #[tokio::test]
@@ -143,7 +145,9 @@ mod tests {
         })]);
         let file = override_file();
         file.write(OverrideMode::Active).unwrap();
-        let mode = resolve(&sources, &file, Duration::from_secs(60)).await.unwrap();
+        let mode = resolve(&sources, &file, Duration::from_secs(60))
+            .await
+            .unwrap();
         assert_eq!(mode, PresenceMode::Active);
     }
 
@@ -154,7 +158,9 @@ mod tests {
             since: Some(Duration::from_secs(5)),
         })]);
         let file = override_file();
-        let mode = resolve(&sources, &file, Duration::from_secs(1200)).await.unwrap();
+        let mode = resolve(&sources, &file, Duration::from_secs(1200))
+            .await
+            .unwrap();
         assert_eq!(mode, PresenceMode::Active);
     }
 
@@ -165,7 +171,9 @@ mod tests {
             since: Some(Duration::from_secs(1800)),
         })]);
         let file = override_file();
-        let mode = resolve(&sources, &file, Duration::from_secs(1200)).await.unwrap();
+        let mode = resolve(&sources, &file, Duration::from_secs(1200))
+            .await
+            .unwrap();
         assert_eq!(mode, PresenceMode::Autonomous);
     }
 
@@ -173,7 +181,9 @@ mod tests {
     async fn empty_source_list_defaults_to_active() {
         let sources = PresenceSourceList::new(vec![]);
         let file = override_file();
-        let mode = resolve(&sources, &file, Duration::from_secs(60)).await.unwrap();
+        let mode = resolve(&sources, &file, Duration::from_secs(60))
+            .await
+            .unwrap();
         assert_eq!(mode, PresenceMode::Active);
     }
 }

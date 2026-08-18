@@ -66,8 +66,12 @@ impl OverrideFile {
             return Ok(OverrideMode::Auto);
         }
         let data = std::fs::read_to_string(&self.path)?;
-        OverrideMode::parse(&data)
-            .ok_or_else(|| anyhow::anyhow!("unrecognized override mode in {}: {data:?}", self.path.display()))
+        OverrideMode::parse(&data).ok_or_else(|| {
+            anyhow::anyhow!(
+                "unrecognized override mode in {}: {data:?}",
+                self.path.display()
+            )
+        })
     }
 
     /// # Errors

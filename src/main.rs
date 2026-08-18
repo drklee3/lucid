@@ -46,14 +46,20 @@ async fn main() -> anyhow::Result<()> {
             ConfigCommand::Show { config, format } => config_show(config, format).await,
         },
         Command::Task { command } => match command {
-            TaskCommand::List { state, format, config } => task_list(state, format, config).await,
+            TaskCommand::List {
+                state,
+                format,
+                config,
+            } => task_list(state, format, config).await,
             TaskCommand::Approve { issue_id, config } => {
                 task_set_decision(&issue_id, DecisionState::Approved, config).await
             }
             TaskCommand::Reject { issue_id, config } => {
                 task_set_decision(&issue_id, DecisionState::Rejected, config).await
             }
-            TaskCommand::DispatchNow { issue_id, config } => task_dispatch_now(&issue_id, config).await,
+            TaskCommand::DispatchNow { issue_id, config } => {
+                task_dispatch_now(&issue_id, config).await
+            }
             TaskCommand::Create {
                 title,
                 summary,
@@ -148,26 +154,29 @@ async fn status(_format: cli::OutputFormat, _watch: bool) -> anyhow::Result<()> 
     )
 }
 
-async fn show(
-    _worker_id: &str,
-    _format: cli::OutputFormat,
-    _log_lines: u32,
-) -> anyhow::Result<()> {
+async fn show(_worker_id: &str, _format: cli::OutputFormat, _log_lines: u32) -> anyhow::Result<()> {
     anyhow::bail!(
         "not implemented: `lucid show` needs to query a running daemon over IPC, not yet designed — see docs/CLI.md § Not yet designed."
     )
 }
 
-async fn pm_wake(respect_presence: bool, dry_run: bool, config: Option<PathBuf>) -> anyhow::Result<()> {
+async fn pm_wake(
+    respect_presence: bool,
+    dry_run: bool,
+    config: Option<PathBuf>,
+) -> anyhow::Result<()> {
     let config = Config::load(&resolve_config_path(config))?;
 
     if respect_presence {
         let sources = default_presence_sources();
         let override_file = override_file_for(&config);
-        let idle_threshold = Duration::from_secs(u64::from(config.presence.idle_threshold_minutes) * 60);
+        let idle_threshold =
+            Duration::from_secs(u64::from(config.presence.idle_threshold_minutes) * 60);
         let mode = presence::resolve(&sources, &override_file, idle_threshold).await?;
         if mode != PresenceMode::Autonomous {
-            println!("presence mode is Active — skipping (pass without --respect-presence to bypass the gate)");
+            println!(
+                "presence mode is Active — skipping (pass without --respect-presence to bypass the gate)"
+            );
             return Ok(());
         }
     }
@@ -204,7 +213,8 @@ async fn presence_status(format: cli::OutputFormat, config: Option<PathBuf>) -> 
     let config = Config::load(&resolve_config_path(config))?;
     let sources = default_presence_sources();
     let override_file = override_file_for(&config);
-    let idle_threshold = Duration::from_secs(u64::from(config.presence.idle_threshold_minutes) * 60);
+    let idle_threshold =
+        Duration::from_secs(u64::from(config.presence.idle_threshold_minutes) * 60);
     let mode = presence::resolve(&sources, &override_file, idle_threshold).await?;
     let override_mode = override_file.read()?;
     let readings = sources.readings().await;
@@ -224,11 +234,14 @@ async fn presence_status(format: cli::OutputFormat, config: Option<PathBuf>) -> 
             println!("MODE: {mode:?} (override: {})", override_mode.as_str());
             println!();
             if readings.is_empty() {
-                println!("(no automatic presence sources configured — logind D-Bus wiring isn't implemented yet)");
+                println!(
+                    "(no automatic presence sources configured — logind D-Bus wiring isn't implemented yet)"
+                );
             } else {
                 println!("{:<20} {:<10} IDLE SINCE", "SOURCE", "IDLE");
                 for (name, idle, since) in readings {
-                    let since_desc = since.map_or_else(|| "-".to_string(), |d| format!("{}s", d.as_secs()));
+                    let since_desc =
+                        since.map_or_else(|| "-".to_string(), |d| format!("{}s", d.as_secs()));
                     println!("{name:<20} {idle:<10} {since_desc}");
                 }
             }
@@ -237,7 +250,10 @@ async fn presence_status(format: cli::OutputFormat, config: Option<PathBuf>) -> 
     Ok(())
 }
 
-async fn presence_override(mode: cli::PresenceOverrideMode, config: Option<PathBuf>) -> anyhow::Result<()> {
+async fn presence_override(
+    mode: cli::PresenceOverrideMode,
+    config: Option<PathBuf>,
+) -> anyhow::Result<()> {
     let config = Config::load(&resolve_config_path(config))?;
     let override_file = override_file_for(&config);
     let mode = match mode {
@@ -329,7 +345,11 @@ async fn task_create(
     Ok(())
 }
 
-async fn task_list(state: cli::TaskState, format: cli::OutputFormat, config: Option<PathBuf>) -> anyhow::Result<()> {
+async fn task_list(
+    state: cli::TaskState,
+    format: cli::OutputFormat,
+    config: Option<PathBuf>,
+) -> anyhow::Result<()> {
     let config = Config::load(&resolve_config_path(config))?;
     let tracker = lucid::tracker::build(&config.tracker)?;
     let decision = task_state_to_decision(state);
@@ -361,7 +381,11 @@ async fn task_list(state: cli::TaskState, format: cli::OutputFormat, config: Opt
 /// tracker's own UI action would trigger — moving the issue's real ticket state
 /// for the Linear backend, not a second, lucid-side record of approval. See
 /// docs/wiki/architecture/worker-completion.md.
-async fn task_set_decision(issue_id: &str, state: DecisionState, config: Option<PathBuf>) -> anyhow::Result<()> {
+async fn task_set_decision(
+    issue_id: &str,
+    state: DecisionState,
+    config: Option<PathBuf>,
+) -> anyhow::Result<()> {
     let config = Config::load(&resolve_config_path(config))?;
     let tracker = lucid::tracker::build(&config.tracker)?;
     tracker.set_decision_state(issue_id, state).await?;
@@ -377,7 +401,9 @@ async fn task_dispatch_now(issue_id: &str, config: Option<PathBuf>) -> anyhow::R
     let config = Config::load(&resolve_config_path(config))?;
     let tracker = lucid::tracker::build(&config.tracker)?;
 
-    let approved = tracker.query_by_decision_state(DecisionState::Approved).await?;
+    let approved = tracker
+        .query_by_decision_state(DecisionState::Approved)
+        .await?;
     let issue = approved.into_iter().find(|i| i.id == issue_id).ok_or_else(|| {
         anyhow::anyhow!(
             "`{issue_id}` isn't in the Approved state — approve it first (`lucid task approve {issue_id}`)"

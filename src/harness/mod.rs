@@ -160,7 +160,10 @@ fn parse_stream_events(stdout: &str) -> (Option<BlockReason>, DispatchOutcome) {
         };
         match event.kind.as_str() {
             "system" if event.subtype.as_deref() == Some("api_retry") => {
-                block = event.error.as_deref().and_then(BlockReason::from_retry_error);
+                block = event
+                    .error
+                    .as_deref()
+                    .and_then(BlockReason::from_retry_error);
             }
             "system" if event.subtype.as_deref() == Some("init") => {
                 outcome.session_id = event.session_id.or(outcome.session_id);
@@ -282,7 +285,13 @@ pub async fn dispatch_with_fallback(req: DispatchRequest<'_>) -> anyhow::Result<
         cmd.current_dir(req.workdir);
         cmd.kill_on_drop(true);
         cmd.args(&profile.args);
-        apply_telemetry(&mut cmd, profile.kind, req.telemetry, req.ticket_id, &dispatch_id);
+        apply_telemetry(
+            &mut cmd,
+            profile.kind,
+            req.telemetry,
+            req.ticket_id,
+            &dispatch_id,
+        );
         apply_dispatch_flags(&mut cmd, profile.kind, req.claude_extra_args);
         cmd.arg(req.prompt);
 
@@ -353,7 +362,9 @@ mod tests {
     #[test]
     fn parse_stream_events_reads_the_final_result() {
         let stdout = line(r#"{"type":"system","subtype":"init","session_id":"s1"}"#)
-            + &line(r#"{"type":"result","subtype":"success","is_error":false,"session_id":"s1","result":"done"}"#);
+            + &line(
+                r#"{"type":"result","subtype":"success","is_error":false,"session_id":"s1","result":"done"}"#,
+            );
         let (block, outcome) = parse_stream_events(&stdout);
         assert_eq!(block, None);
         assert_eq!(outcome.is_error, Some(false));

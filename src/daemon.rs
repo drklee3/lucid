@@ -17,9 +17,9 @@
 
 use crate::config::{Config, ObservabilityConfig, PresenceConfig};
 use crate::harness::HarnessProfile;
+use crate::pm;
 use crate::presence::override_file::OverrideFile;
 use crate::presence::{self, PresenceMode, PresenceSourceList};
-use crate::pm;
 use crate::state::WorkerRun;
 use crate::tracker::{DecisionState, TrackerAdapter};
 use crate::worker::{self, CompletionMode};
@@ -94,7 +94,10 @@ impl Daemon {
     /// Only returns `Err` for a `tokio::signal::ctrl_c` setup failure; a failed
     /// individual tick is logged to stdout and the loop continues.
     pub async fn run_foreground(&self) -> anyhow::Result<()> {
-        println!("lucid daemon starting — tick every {:?}", self.tick_interval);
+        println!(
+            "lucid daemon starting — tick every {:?}",
+            self.tick_interval
+        );
         loop {
             tokio::select! {
                 result = tokio::signal::ctrl_c() => {
@@ -114,8 +117,10 @@ impl Daemon {
     /// One reconciliation pass: resolve presence, and if autonomous, dispatch any
     /// newly-approved issues plus run a PM wake if its interval has elapsed.
     async fn tick(&self) -> anyhow::Result<()> {
-        let idle_threshold = Duration::from_secs(u64::from(self.presence_cfg.idle_threshold_minutes) * 60);
-        let mode = presence::resolve(&self.presence_sources, &self.override_file, idle_threshold).await?;
+        let idle_threshold =
+            Duration::from_secs(u64::from(self.presence_cfg.idle_threshold_minutes) * 60);
+        let mode =
+            presence::resolve(&self.presence_sources, &self.override_file, idle_threshold).await?;
 
         if mode != PresenceMode::Autonomous {
             return Ok(());
@@ -127,7 +132,10 @@ impl Daemon {
     }
 
     async fn dispatch_approved_issues(&self) -> anyhow::Result<()> {
-        let approved = self.tracker.query_by_decision_state(DecisionState::Approved).await?;
+        let approved = self
+            .tracker
+            .query_by_decision_state(DecisionState::Approved)
+            .await?;
         for issue in approved {
             // Dispatch on first sight, or retry a previous `Failed`/`TimedOut` run
             // — anything else (in particular `Succeeded`) is done and stays done.
@@ -171,7 +179,13 @@ impl Daemon {
     async fn maybe_wake_pm(&self) -> anyhow::Result<()> {
         let due = {
             let last = *self.last_pm_wake.lock().unwrap();
-            last.is_none_or(|t| Utc::now().signed_duration_since(t).to_std().unwrap_or_default() >= self.pm_wake_interval)
+            last.is_none_or(|t| {
+                Utc::now()
+                    .signed_duration_since(t)
+                    .to_std()
+                    .unwrap_or_default()
+                    >= self.pm_wake_interval
+            })
         };
         if !due {
             return Ok(());
@@ -205,7 +219,10 @@ impl Daemon {
                 outcome.filed.len(),
                 outcome.skipped_similar.len()
             ),
-            Err(e) => eprintln!("PM wake failed (will retry after {:?}): {e}", self.pm_wake_interval),
+            Err(e) => eprintln!(
+                "PM wake failed (will retry after {:?}): {e}",
+                self.pm_wake_interval
+            ),
         }
         Ok(())
     }

@@ -4,7 +4,10 @@ use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
-#[command(name = "lucid", about = "Presence-aware autonomous development orchestrator")]
+#[command(
+    name = "lucid",
+    about = "Presence-aware autonomous development orchestrator"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,

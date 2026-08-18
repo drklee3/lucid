@@ -4,7 +4,9 @@
 //! loop (see docs/wiki/architecture/trace-correlation.md) can be proven end-to-end
 //! today without needing Linear API credentials.
 
-use super::{DecisionState, Proposal, ReviewMode, TrackerAdapter, TrackerIssue, render_description};
+use super::{
+    DecisionState, Proposal, ReviewMode, TrackerAdapter, TrackerIssue, render_description,
+};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -95,7 +97,10 @@ impl TrackerAdapter for FileTracker {
         self.persist(&issues)
     }
 
-    async fn query_by_decision_state(&self, state: DecisionState) -> anyhow::Result<Vec<TrackerIssue>> {
+    async fn query_by_decision_state(
+        &self,
+        state: DecisionState,
+    ) -> anyhow::Result<Vec<TrackerIssue>> {
         let issues = self.issues.lock().unwrap();
         Ok(issues
             .iter()
@@ -158,7 +163,10 @@ mod tests {
     }
 
     fn scratch_path(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("lucid-file-tracker-test-{name}-{}.json", uuid::Uuid::new_v4()))
+        std::env::temp_dir().join(format!(
+            "lucid-file-tracker-test-{name}-{}.json",
+            uuid::Uuid::new_v4()
+        ))
     }
 
     #[tokio::test]
@@ -171,7 +179,10 @@ mod tests {
             .await
             .unwrap();
 
-        let pending = tracker.query_by_decision_state(DecisionState::Pending).await.unwrap();
+        let pending = tracker
+            .query_by_decision_state(DecisionState::Pending)
+            .await
+            .unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].id, id);
 
@@ -188,7 +199,10 @@ mod tests {
     async fn set_decision_state_persists_across_reopen() {
         let path = scratch_path("persist");
         let tracker = FileTracker::open(&path).unwrap();
-        let id = tracker.create_proposal(&proposal("Some proposal")).await.unwrap();
+        let id = tracker
+            .create_proposal(&proposal("Some proposal"))
+            .await
+            .unwrap();
         tracker
             .set_decision_state(&id, DecisionState::Approved)
             .await
@@ -219,7 +233,10 @@ mod tests {
     async fn approving_makes_the_issue_visible_to_the_dispatch_loop() {
         let path = scratch_path("approve-visibility");
         let tracker = FileTracker::open(&path).unwrap();
-        let id = tracker.create_proposal(&proposal("Ship the thing")).await.unwrap();
+        let id = tracker
+            .create_proposal(&proposal("Ship the thing"))
+            .await
+            .unwrap();
 
         assert!(
             tracker
@@ -228,7 +245,10 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
-        tracker.set_decision_state(&id, DecisionState::Approved).await.unwrap();
+        tracker
+            .set_decision_state(&id, DecisionState::Approved)
+            .await
+            .unwrap();
         assert_eq!(
             tracker
                 .query_by_decision_state(DecisionState::Approved)

@@ -118,8 +118,9 @@ pub async fn wake(
     let result_text = outcome
         .result_text
         .ok_or_else(|| anyhow::anyhow!("PM wake dispatch produced no result text"))?;
-    let json = extract_json_array(&result_text)
-        .ok_or_else(|| anyhow::anyhow!("PM wake result didn't contain a JSON array: {result_text}"))?;
+    let json = extract_json_array(&result_text).ok_or_else(|| {
+        anyhow::anyhow!("PM wake result didn't contain a JSON array: {result_text}")
+    })?;
     let raw: Vec<RawProposal> = serde_json::from_str(json)
         .map_err(|e| anyhow::anyhow!("PM wake result wasn't valid JSON: {e}\n{json}"))?;
 
@@ -246,7 +247,8 @@ mod tests {
         }])
         .to_string();
         let profile = fake_pm_harness(&gap);
-        let tracker_path = std::env::temp_dir().join(format!("lucid-pm-test-{}.json", uuid::Uuid::new_v4()));
+        let tracker_path =
+            std::env::temp_dir().join(format!("lucid-pm-test-{}.json", uuid::Uuid::new_v4()));
         let tracker = FileTracker::open(&tracker_path).unwrap();
 
         let first = wake(
@@ -296,7 +298,8 @@ mod tests {
         }])
         .to_string();
         let profile = fake_pm_harness(&gap);
-        let tracker_path = std::env::temp_dir().join(format!("lucid-pm-test-{}.json", uuid::Uuid::new_v4()));
+        let tracker_path =
+            std::env::temp_dir().join(format!("lucid-pm-test-{}.json", uuid::Uuid::new_v4()));
         let tracker = FileTracker::open(&tracker_path).unwrap();
 
         let outcome = wake(
@@ -326,7 +329,8 @@ mod tests {
         ])
         .to_string();
         let profile = fake_pm_harness(&gaps);
-        let tracker_path = std::env::temp_dir().join(format!("lucid-pm-test-{}.json", uuid::Uuid::new_v4()));
+        let tracker_path =
+            std::env::temp_dir().join(format!("lucid-pm-test-{}.json", uuid::Uuid::new_v4()));
         let tracker = FileTracker::open(&tracker_path).unwrap();
 
         let outcome = wake(
