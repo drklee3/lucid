@@ -7,8 +7,8 @@
 //! built for LLM tool-calling.
 
 use super::{
-    DecisionState, LABEL_PREFIX, Proposal, ReviewMode, TrackerAdapter, TrackerIssue, decision_from_label,
-    decision_label, render_description, review_from_label, review_label,
+    DecisionState, Proposal, ReviewMode, TrackerAdapter, TrackerIssue, decision_state_from_name,
+    decision_state_name, render_description, review_from_label, review_label,
 };
 use anyhow::{Context, anyhow, bail};
 use async_trait::async_trait;
@@ -112,20 +112,33 @@ impl LinearAdapter {
             })
     }
 
-    async fn issue_label_names(&self, issue_id: &str) -> anyhow::Result<Vec<LabelNode>> {
+    /// Decision state moves the issue's real `state` field, not a label — see
+    /// docs/wiki/architecture/tracker-adapter.md. Like `label_id`, lucid never
+    /// creates these: a missing one is a workspace-setup error.
+    async fn state_id(&self, name: &str) -> anyhow::Result<String> {
         const QUERY: &str = r"
-            query IssueLabels($id: String!) {
-              issue(id: $id) {
-                labels(first: 100) { nodes { id name } }
+            query StateId($name: String!, $team: String!) {
+              workflowStates(filter: { name: { eq: $name }, team: { key: { eq: $team } } }, first: 1) {
+                nodes { id }
               }
             }
         ";
 
-        let data: IssueLabelsData = self.graphql(QUERY, json!({ "id": issue_id })).await?;
-        let issue = data
-            .issue
-            .ok_or_else(|| anyhow!("linear issue `{issue_id}` not found"))?;
-        Ok(issue.labels.nodes)
+        let data: WorkflowStatesData = self
+            .graphql(QUERY, json!({ "name": name, "team": self.team_key }))
+            .await?;
+
+        data.workflow_states
+            .nodes
+            .into_iter()
+            .next()
+            .map(|node| node.id)
+            .ok_or_else(|| {
+                anyhow!(
+                    "workflow state `{name}` does not exist on team `{}` — create it in Linear first",
+                    self.team_key
+                )
+            })
     }
 }
 
@@ -141,9 +154,7 @@ impl TrackerAdapter for LinearAdapter {
             }
         ";
 
-        let decision_label_id = self
-            .label_id(decision_label(DecisionState::Pending))
-            .await?;
+        let pending_state_id = self.state_id(decision_state_name(DecisionState::Pending)).await?;
         let review_label_id = self.label_id(review_label(proposal.review)).await?;
         let team = team_id(
             &self
@@ -156,7 +167,8 @@ impl TrackerAdapter for LinearAdapter {
             "teamId": team,
             "title": proposal.title,
             "description": render_description(proposal),
-            "labelIds": [decision_label_id, review_label_id],
+            "stateId": pending_state_id,
+            "labelIds": [review_label_id],
         });
 
         let data: IssueCreateData = self.graphql(MUTATION, json!({ "input": input })).await?;
@@ -176,68 +188,43 @@ impl TrackerAdapter for LinearAdapter {
     }
 
     async fn set_decision_state(&self, issue_id: &str, state: DecisionState) -> anyhow::Result<()> {
-        const ADD: &str = r"
-            mutation AddLabel($id: String!, $labelId: String!) {
-              issueAddLabel(id: $id, labelId: $labelId) { success }
-            }
-        ";
-        const REMOVE: &str = r"
-            mutation RemoveLabel($id: String!, $labelId: String!) {
-              issueRemoveLabel(id: $id, labelId: $labelId) { success }
+        const MUTATION: &str = r"
+            mutation SetState($id: String!, $stateId: String!) {
+              issueUpdate(id: $id, input: { stateId: $stateId }) { success }
             }
         ";
 
-        let target = decision_label(state);
-        let current = self.issue_label_names(issue_id).await?;
-
-        // Add/remove rather than `issueUpdate { labelIds }`: that input replaces the
-        // whole set, which would drop labels a human added since this read.
-        for stale in current
-            .iter()
-            .filter(|node| node.name.starts_with(LABEL_PREFIX) && node.name != target)
-        {
-            let data: RemoveLabelData = self
-                .graphql(REMOVE, json!({ "id": issue_id, "labelId": stale.id }))
-                .await?;
-            if !data.issue_remove_label.success {
-                bail!(
-                    "linear issueRemoveLabel failed for `{}` on {issue_id}",
-                    stale.name
-                );
-            }
-        }
-
-        if current.iter().any(|node| node.name == target) {
-            return Ok(());
-        }
-
-        let target_id = self.label_id(target).await?;
-        let data: AddLabelData = self
-            .graphql(ADD, json!({ "id": issue_id, "labelId": target_id }))
+        let state_id = self.state_id(decision_state_name(state)).await?;
+        let data: IssueUpdateData = self
+            .graphql(MUTATION, json!({ "id": issue_id, "stateId": state_id }))
             .await?;
-        if !data.issue_add_label.success {
-            bail!("linear issueAddLabel failed for `{target}` on {issue_id}");
+        if !data.issue_update.success {
+            bail!(
+                "linear issueUpdate failed setting state `{}` on {issue_id}",
+                decision_state_name(state)
+            );
         }
         Ok(())
     }
 
-    async fn query_by_label(&self, label: &str) -> anyhow::Result<Vec<TrackerIssue>> {
+    async fn query_by_decision_state(&self, state: DecisionState) -> anyhow::Result<Vec<TrackerIssue>> {
         const QUERY: &str = r"
-            query ByLabel($label: String!, $team: String!, $first: Int!, $after: String) {
+            query ByState($state: String!, $team: String!, $first: Int!, $after: String) {
               issues(
-                filter: { labels: { some: { name: { eq: $label } } }, team: { key: { eq: $team } } }
+                filter: { state: { name: { eq: $state } }, team: { key: { eq: $team } } }
                 first: $first
                 after: $after
               ) {
-                nodes { id title description labels(first: 100) { nodes { id name } } }
+                nodes { id title description state { name } labels(first: 100) { nodes { id name } } }
                 pageInfo { hasNextPage endCursor }
               }
             }
         ";
 
-        // Callers use this for the rejected-label dedup check, where a truncated page
+        // Callers use this for the rejected-state dedup check, where a truncated page
         // reads as "no match" and files a duplicate — see
         // docs/wiki/architecture/dedup-death-loop.md. Paginate fully.
+        let state_name = decision_state_name(state);
         let mut collected = Vec::new();
         let mut cursor: Option<String> = None;
         loop {
@@ -245,7 +232,7 @@ impl TrackerAdapter for LinearAdapter {
                 .graphql(
                     QUERY,
                     json!({
-                        "label": label,
+                        "state": state_name,
                         "team": self.team_key,
                         "first": PAGE_SIZE,
                         "after": cursor,
@@ -280,7 +267,7 @@ impl TrackerAdapter for LinearAdapter {
                 includeArchived: true
                 first: $first
               ) {
-                nodes { id title description labels(first: 100) { nodes { id name } } }
+                nodes { id title description state { name } labels(first: 100) { nodes { id name } } }
               }
             }
         ";
@@ -347,7 +334,6 @@ struct GraphQlError {
 
 #[derive(Deserialize)]
 struct LabelNode {
-    id: String,
     name: String,
 }
 
@@ -362,21 +348,27 @@ struct IdNode {
 }
 
 #[derive(Deserialize)]
+struct WorkflowStateName {
+    name: String,
+}
+
+#[derive(Deserialize)]
 struct IssueNode {
     id: String,
     title: String,
     #[serde(default)]
     description: Option<String>,
+    #[serde(default)]
+    state: Option<WorkflowStateName>,
     labels: Nodes<LabelNode>,
 }
 
 impl IssueNode {
     fn into_tracker_issue(self) -> TrackerIssue {
         let decision_state = self
-            .labels
-            .nodes
-            .iter()
-            .find_map(|node| decision_from_label(&node.name));
+            .state
+            .as_ref()
+            .and_then(|s| decision_state_from_name(&s.name));
         let review = self
             .labels
             .nodes
@@ -422,13 +414,9 @@ struct LabelsData {
 }
 
 #[derive(Deserialize)]
-struct IssueLabelsData {
-    issue: Option<IssueWithLabels>,
-}
-
-#[derive(Deserialize)]
-struct IssueWithLabels {
-    labels: Nodes<LabelNode>,
+struct WorkflowStatesData {
+    #[serde(rename = "workflowStates")]
+    workflow_states: Nodes<IdNode>,
 }
 
 #[derive(Deserialize)]
@@ -460,15 +448,9 @@ struct SuccessPayload {
 }
 
 #[derive(Deserialize)]
-struct AddLabelData {
-    #[serde(rename = "issueAddLabel")]
-    issue_add_label: SuccessPayload,
-}
-
-#[derive(Deserialize)]
-struct RemoveLabelData {
-    #[serde(rename = "issueRemoveLabel")]
-    issue_remove_label: SuccessPayload,
+struct IssueUpdateData {
+    #[serde(rename = "issueUpdate")]
+    issue_update: SuccessPayload,
 }
 
 #[derive(Deserialize)]
@@ -533,7 +515,7 @@ mod tests {
     }
 
     #[test]
-    fn decision_labels_round_trip() {
+    fn decision_state_names_round_trip() {
         for state in [
             DecisionState::Pending,
             DecisionState::Approved,
@@ -542,21 +524,20 @@ mod tests {
             DecisionState::Done,
             DecisionState::NeedsReview,
         ] {
-            let label = decision_label(state);
-            assert!(label.starts_with(LABEL_PREFIX));
-            assert_eq!(decision_from_label(label), Some(state));
+            let name = decision_state_name(state);
+            assert_eq!(decision_state_from_name(name), Some(state));
         }
-        assert_eq!(decision_from_label("area:presence"), None);
+        assert_eq!(decision_state_from_name("Triage"), None);
     }
 
     #[test]
-    fn issue_node_reads_decision_state_from_labels() {
+    fn issue_node_reads_decision_state_from_the_state_field() {
         let node: IssueNode = serde_json::from_value(json!({
             "id": "abc",
             "title": "Fix presence detection",
+            "state": { "name": "Approved" },
             "labels": { "nodes": [
-                { "id": "l1", "name": "area:presence" },
-                { "id": "l2", "name": "proposal:approved" }
+                { "id": "l1", "name": "area:presence" }
             ] }
         }))
         .expect("issue node");

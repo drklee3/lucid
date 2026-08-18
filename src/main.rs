@@ -9,7 +9,7 @@ use lucid::config::{Config, default_override_path};
 use lucid::daemon::Daemon;
 use lucid::presence::override_file::{OverrideFile, OverrideMode};
 use lucid::presence::{self, PresenceMode, PresenceSourceList};
-use lucid::tracker::{DecisionState, EffortEstimate, Proposal, ReviewMode, decision_label};
+use lucid::tracker::{DecisionState, EffortEstimate, Proposal, ReviewMode};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -333,7 +333,7 @@ async fn task_list(state: cli::TaskState, format: cli::OutputFormat, config: Opt
     let config = Config::load(&resolve_config_path(config))?;
     let tracker = lucid::tracker::build(&config.tracker)?;
     let decision = task_state_to_decision(state);
-    let issues = tracker.query_by_label(decision_label(decision)).await?;
+    let issues = tracker.query_by_decision_state(decision).await?;
 
     match format {
         cli::OutputFormat::Json => {
@@ -358,8 +358,8 @@ async fn task_list(state: cli::TaskState, format: cli::OutputFormat, config: Opt
 }
 
 /// Writes a decision state via the same `TrackerAdapter::set_decision_state` the
-/// tracker's own UI action would trigger — Linear's label, for the real backend —
-/// not a second, lucid-side record of approval. See
+/// tracker's own UI action would trigger — moving the issue's real ticket state
+/// for the Linear backend, not a second, lucid-side record of approval. See
 /// docs/wiki/architecture/worker-completion.md.
 async fn task_set_decision(issue_id: &str, state: DecisionState, config: Option<PathBuf>) -> anyhow::Result<()> {
     let config = Config::load(&resolve_config_path(config))?;
@@ -377,7 +377,7 @@ async fn task_dispatch_now(issue_id: &str, config: Option<PathBuf>) -> anyhow::R
     let config = Config::load(&resolve_config_path(config))?;
     let tracker = lucid::tracker::build(&config.tracker)?;
 
-    let approved = tracker.query_by_label(decision_label(DecisionState::Approved)).await?;
+    let approved = tracker.query_by_decision_state(DecisionState::Approved).await?;
     let issue = approved.into_iter().find(|i| i.id == issue_id).ok_or_else(|| {
         anyhow::anyhow!(
             "`{issue_id}` isn't in the Approved state — approve it first (`lucid task approve {issue_id}`)"

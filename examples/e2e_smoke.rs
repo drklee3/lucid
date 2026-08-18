@@ -71,7 +71,7 @@ async fn main() -> anyhow::Result<()> {
     let issue_id = tracker.create_proposal(&proposal).await?;
     tracker.set_decision_state(&issue_id, DecisionState::Approved).await?;
 
-    let approved = tracker.query_by_label("proposal:approved").await?;
+    let approved = tracker.query_by_decision_state(DecisionState::Approved).await?;
     let issue = approved
         .into_iter()
         .find(|i| i.id == issue_id)

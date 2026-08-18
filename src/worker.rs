@@ -521,7 +521,7 @@ mod tests {
                 .push((issue_id.to_string(), state));
             Ok(())
         }
-        async fn query_by_label(&self, _label: &str) -> anyhow::Result<Vec<TrackerIssue>> {
+        async fn query_by_decision_state(&self, _state: DecisionState) -> anyhow::Result<Vec<TrackerIssue>> {
             unimplemented!("not exercised by these tests")
         }
         async fn query_similar(&self, _title: &str) -> anyhow::Result<Vec<TrackerIssue>> {

@@ -97,29 +97,32 @@ pub enum DecisionState {
     NeedsReview,
 }
 
-pub const LABEL_PREFIX: &str = "proposal:";
-
+/// Real Linear ticket-state names lucid requires to exist in a team's workflow
+/// (created once via `workflowStateCreate`, same explicit setup as the `review:*`
+/// labels below) — decision state moves the issue's actual `state` field, not a
+/// label, so it's visible in the board view and any of Linear's own state-based
+/// automations. See docs/wiki/architecture/tracker-adapter.md.
 #[must_use]
-pub fn decision_label(state: DecisionState) -> &'static str {
+pub fn decision_state_name(state: DecisionState) -> &'static str {
     match state {
-        DecisionState::Pending => "proposal:pending",
-        DecisionState::Approved => "proposal:approved",
-        DecisionState::Rejected => "proposal:rejected",
-        DecisionState::StaleClosed => "proposal:stale",
-        DecisionState::Done => "proposal:done",
-        DecisionState::NeedsReview => "proposal:needs-review",
+        DecisionState::Pending => "Pending",
+        DecisionState::Approved => "Approved",
+        DecisionState::Rejected => "Rejected",
+        DecisionState::StaleClosed => "Stale",
+        DecisionState::Done => "Done",
+        DecisionState::NeedsReview => "In Review",
     }
 }
 
 #[must_use]
-pub fn decision_from_label(name: &str) -> Option<DecisionState> {
+pub fn decision_state_from_name(name: &str) -> Option<DecisionState> {
     match name {
-        "proposal:pending" => Some(DecisionState::Pending),
-        "proposal:approved" => Some(DecisionState::Approved),
-        "proposal:rejected" => Some(DecisionState::Rejected),
-        "proposal:stale" => Some(DecisionState::StaleClosed),
-        "proposal:done" => Some(DecisionState::Done),
-        "proposal:needs-review" => Some(DecisionState::NeedsReview),
+        "Pending" => Some(DecisionState::Pending),
+        "Approved" => Some(DecisionState::Approved),
+        "Rejected" => Some(DecisionState::Rejected),
+        "Stale" => Some(DecisionState::StaleClosed),
+        "Done" => Some(DecisionState::Done),
+        "In Review" => Some(DecisionState::NeedsReview),
         _ => None,
     }
 }
@@ -151,9 +154,9 @@ pub trait TrackerAdapter: Send + Sync {
         state: DecisionState,
     ) -> anyhow::Result<()>;
 
-    /// Issues carrying a given label — used for dedup (rejected-label check) and
-    /// for finding open work in a given state.
-    async fn query_by_label(&self, label: &str) -> anyhow::Result<Vec<TrackerIssue>>;
+    /// Issues currently in a given decision state — used for dedup (rejected
+    /// check) and for finding open work (e.g. `Approved`, ready to dispatch).
+    async fn query_by_decision_state(&self, state: DecisionState) -> anyhow::Result<Vec<TrackerIssue>>;
 
     /// Content-similarity search, for the death-loop-prevention dedup check (see
     /// docs/wiki/architecture/dedup-death-loop.md) — implementation decides what

@@ -21,7 +21,7 @@ use crate::presence::override_file::OverrideFile;
 use crate::presence::{self, PresenceMode, PresenceSourceList};
 use crate::pm;
 use crate::state::WorkerRun;
-use crate::tracker::TrackerAdapter;
+use crate::tracker::{DecisionState, TrackerAdapter};
 use crate::worker::{self, CompletionMode};
 use chrono::Utc;
 use std::collections::HashMap;
@@ -29,7 +29,6 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
 
-const APPROVED_LABEL: &str = "proposal:approved";
 const PM_GOAL: &str = "keep the codebase healthy and close concrete, low-risk gaps";
 
 pub struct Daemon {
@@ -128,7 +127,7 @@ impl Daemon {
     }
 
     async fn dispatch_approved_issues(&self) -> anyhow::Result<()> {
-        let approved = self.tracker.query_by_label(APPROVED_LABEL).await?;
+        let approved = self.tracker.query_by_decision_state(DecisionState::Approved).await?;
         for issue in approved {
             // Dispatch on first sight, or retry a previous `Failed`/`TimedOut` run
             // — anything else (in particular `Succeeded`) is done and stays done.
