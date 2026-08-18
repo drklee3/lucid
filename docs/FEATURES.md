@@ -12,7 +12,7 @@ listed separately and are explicitly out of v1.
 - [ ] Last-activity source: reads local agent session logs (Hermes, Claude Code, whatever's present) so an actively-driven interactive session blocks the autonomous flip even if the screen looks idle
 - [x] Source composition: any source reporting "not idle" wins — conservative default, additive when more sources are added later
 - [x] Debounce: idle must sustain past the full threshold (default 20 min), not just cross it, before flipping to autonomous (`presence::resolve`)
-- [ ] Mode-transition audit log — every flip is logged (trust-critical, needs an audit trail)
+- [x] Mode-transition audit log — every flip is logged (trust-critical, needs an audit trail)
 
 ## PM / gap-detection
 

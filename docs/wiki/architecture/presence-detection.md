@@ -14,6 +14,20 @@ Three *kinds* of signal, most authoritative first:
 
 Debounce the transition itself (require idle sustained for the full threshold, not just crossed it) to avoid flapping when the user steps away briefly. Log every mode transition — this is a trust-critical piece of the system and needs an audit trail.
 
+## Audit log: history, not state
+
+The override file (`config::default_override_path`, e.g. `$XDG_STATE_HOME/lucid/presence-override`) holds current decision state — what the orchestrator would read *right now* to know the active override, if any. It gets overwritten in place; it has no memory of what it used to say.
+
+The audit log is the complementary append-only history. `AuditLog` (`src/presence/audit_log.rs`) lives at a fixed sibling path, `presence-audit.log` in the same directory as the override file (`AuditLog::default_path_from_override`). Every call to `daemon::tick()` resolves a `PresenceMode` (`Active` or `Autonomous`) and compares it against the mode resolved on the previous tick. A line is appended only when the two differ:
+
+```json
+{"timestamp":"2026-08-18T12:34:56Z","from":"active","to":"autonomous"}
+```
+
+No line is written on the very first tick (nothing to compare against yet) or when the resolved mode is unchanged from the previous tick — the file only ever grows on an actual `Active <-> Autonomous` flip, regardless of which of the three signal kinds above caused it (explicit override, idle source, or activity-log read). The write happens unconditionally once a transition is detected, before any of `tick()`'s Autonomous-only dispatch logic runs, so a transition into or out of Autonomous is always recorded even on a tick that goes on to do nothing else.
+
+This is the mechanism that satisfies the "log every mode transition" requirement above — presence-gated autonomy is trust-critical, and the audit log is what makes a transition inspectable after the fact instead of only visible at the instant it happens.
+
 ## Why `xprintidle` is out
 
 X11-only, breaks under Wayland. `systemd-logind` over D-Bus is compositor-agnostic (the mechanism `dbus-idle` wraps).
@@ -29,4 +43,4 @@ This matches the general "idle-detection fragments across platforms" finding in 
 
 **Consequence, not a blocker:** this doesn't block building the `logind` source (it's still correct, and will work as-is on a real Linux desktop). It means presence-gated autonomy won't actually trigger correctly *on this machine* until a second source (the last-activity-log signal, or eventually a Windows-side input reader) is added to the list. A known gap to close before flipping the system into autonomous mode here — not before starting to build it.
 
-Source: initial design/research pass (2026-08-16); query 2026-08-16 (async trait shape, `research-first` dependency audit).
+Source: initial design/research pass (2026-08-16); query 2026-08-16 (async trait shape, `research-first` dependency audit); query 2026-08-18 (mode-transition audit log).
