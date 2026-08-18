@@ -142,6 +142,7 @@ pub async fn wake(
             // the wake prompt's JSON schema this pass (see docs/FEATURES.md §
             // PM / gap-detection). A human can retag the issue after filing.
             review: ReviewMode::Auto,
+            verify_cmd: None,
         };
 
         if !tracker.query_similar(&proposal.title).await?.is_empty() {

@@ -338,6 +338,29 @@ fn parse_verdict(text: &str) -> (Option<bool>, String) {
     )
 }
 
+/// Runs `cmd` (via `sh -c`) in `workdir` and reports whether it exited clean —
+/// lucid checks the exit code itself rather than asking a review agent to
+/// interpret whether tests passed, since an exit code is a fact and an LLM's
+/// summary of one is a claim. See docs/wiki/architecture/worker-completion.md.
+///
+/// # Errors
+/// Returns an error if the command can't even be spawned or times out — a
+/// *failing* command (nonzero exit) is a normal `Ok(false)`, not an error.
+async fn run_verify_cmd(workdir: &Path, cmd: &str, timeout: Duration) -> anyhow::Result<bool> {
+    let output = tokio::time::timeout(
+        timeout,
+        tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg(cmd)
+            .current_dir(workdir)
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("verify command `{cmd}` timed out after {timeout:?}"))??;
+    Ok(output.status.success())
+}
+
 async fn agent_review(
     issue: &TrackerIssue,
     profiles: &[HarnessProfile],
@@ -405,6 +428,29 @@ pub async fn finalize_completion(
                 .await
         }
         ReviewMode::Agent => {
+            let verify_cmd = crate::tracker::frontmatter_field(issue.description.as_deref(), "verify_cmd");
+            if let Some(cmd) = &verify_cmd {
+                match run_verify_cmd(workdir, cmd, stall_timeout).await {
+                    Ok(true) => {} // falls through to the diff/acceptance-criteria review below
+                    Ok(false) => {
+                        tracker
+                            .attach_note(&issue.id, &format!("Verify command `{cmd}` failed (nonzero exit)."))
+                            .await?;
+                        return tracker
+                            .set_decision_state(&issue.id, DecisionState::NeedsReview)
+                            .await;
+                    }
+                    Err(e) => {
+                        tracker
+                            .attach_note(&issue.id, &format!("Verify command `{cmd}` couldn't run: {e}"))
+                            .await?;
+                        return tracker
+                            .set_decision_state(&issue.id, DecisionState::NeedsReview)
+                            .await;
+                    }
+                }
+            }
+
             let (verdict, note) =
                 agent_review(issue, profiles, observability, workdir, stall_timeout).await?;
             tracker.attach_note(&issue.id, &note).await?;
@@ -834,5 +880,92 @@ mod tests {
             Some(false)
         );
         assert_eq!(parse_verdict("no verdict here").0, None);
+    }
+
+    fn succeeded_run(issue_id: &str) -> WorkerRun {
+        WorkerRun {
+            issue_id: issue_id.to_string(),
+            claim: ClaimState::Released,
+            phase: WorkerPhase::Succeeded,
+            session_id: None,
+            dispatch_id: None,
+            retries: 0,
+            last_event_at: Utc::now(),
+            last_error: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn finalize_completion_agent_verify_cmd_failure_skips_review_and_needs_review() {
+        let tracker = MockTracker::default();
+        let issue = TrackerIssue {
+            id: "ENG-10".into(),
+            title: "t".into(),
+            description: Some("---\nverify_cmd: \"false\"\n---\n\nbody".into()),
+            decision_state: Some(DecisionState::Approved),
+            review: ReviewMode::Agent,
+        };
+        // Empty profiles: if verify_cmd's failure didn't short-circuit before the
+        // LLM review dispatch, agent_review would hit DispatchError::NoProfiles and
+        // this call would return Err — asserting Ok proves the review never ran.
+        finalize_completion(
+            &tracker,
+            &issue,
+            &succeeded_run("ENG-10"),
+            &[],
+            &observability(),
+            &std::env::temp_dir(),
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            *tracker.decisions.lock().unwrap(),
+            vec![("ENG-10".to_string(), DecisionState::NeedsReview)]
+        );
+        assert!(tracker.notes.lock().unwrap()[0].1.contains("Verify command `false` failed"));
+    }
+
+    #[tokio::test]
+    async fn finalize_completion_agent_verify_cmd_pass_then_llm_verdict_decides() {
+        let tracker = MockTracker::default();
+        let issue = TrackerIssue {
+            id: "ENG-11".into(),
+            title: "t".into(),
+            description: Some("---\nverify_cmd: \"true\"\n---\n\nbody".into()),
+            decision_state: Some(DecisionState::Approved),
+            review: ReviewMode::Agent,
+        };
+        let event = serde_json::json!({
+            "type": "result",
+            "subtype": "success",
+            "is_error": false,
+            "result": "VERDICT: PASS",
+        })
+        .to_string();
+        let profiles = [HarnessProfile {
+            name: "fake-reviewer".into(),
+            kind: HarnessKind::ClaudeCode,
+            cmd: "sh".into(),
+            args: vec!["-c".into(), format!("echo '{event}'")],
+            auth_mode: AuthMode::Subscription,
+            priority: 1,
+        }];
+
+        finalize_completion(
+            &tracker,
+            &issue,
+            &succeeded_run("ENG-11"),
+            &profiles,
+            &observability(),
+            &std::env::temp_dir(),
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            *tracker.decisions.lock().unwrap(),
+            vec![("ENG-11".to_string(), DecisionState::Done)]
+        );
     }
 }

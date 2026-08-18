@@ -25,6 +25,15 @@ pub struct Proposal {
     /// Who gets to close this one out — see docs/wiki/architecture/worker-completion.md.
     #[serde(default)]
     pub review: ReviewMode,
+    /// Shell command a `ReviewMode::Agent` review runs in `daemon.workdir` before
+    /// judging the diff — lucid runs it and checks the exit code itself,
+    /// deterministically, rather than trusting an LLM's read of whether it passed.
+    /// `None` lets the review agent infer its own command from the repo's
+    /// conventions (`Cargo.toml`, `package.json`, `CLAUDE.md`, ...) instead of
+    /// requiring this to be set for every proposal. See
+    /// docs/wiki/architecture/worker-completion.md.
+    #[serde(default)]
+    pub verify_cmd: Option<String>,
 }
 
 /// How a successful dispatch's outcome gets finalized — the fork
@@ -227,6 +236,11 @@ pub fn render_description(proposal: &Proposal) -> String {
     );
     let _ = writeln!(out, "research_ref: {research_ref}");
     let _ = writeln!(out, "review: {}", yaml_scalar(review_label(proposal.review)));
+    let verify_cmd = proposal
+        .verify_cmd
+        .as_deref()
+        .map_or_else(|| "null".to_string(), yaml_scalar);
+    let _ = writeln!(out, "verify_cmd: {verify_cmd}");
     out.push_str("---\n\n");
 
     out.push_str(&proposal.summary);
@@ -243,10 +257,84 @@ pub fn render_description(proposal: &Proposal) -> String {
     out
 }
 
+/// Reads one scalar string field back out of a `render_description`-rendered
+/// frontmatter block — the same JSON-per-field format
+/// `description_frontmatter_is_parseable_json_per_field` already covers.
+///
+/// This is a deliberate, narrow exception to the rule the rest of the frontmatter
+/// follows (see docs/wiki/architecture/agent-handoff.md): most fields are meant
+/// for the *harness* to read as prose, not for lucid's own code to parse back out
+/// — `review` gets that treatment via a dedicated label instead. `verify_cmd` is
+/// free-text (a shell command), which can't be encoded as a label the way a small
+/// enum can, so it goes through this parser instead. Returns `None` if there's no
+/// frontmatter, the key is absent, or its value is JSON `null`.
+#[must_use]
+pub fn frontmatter_field(description: Option<&str>, key: &str) -> Option<String> {
+    let frontmatter = description?.strip_prefix("---\n")?.split_once("\n---\n")?.0;
+    for line in frontmatter.lines() {
+        if let Some((k, v)) = line.split_once(": ") {
+            if k == key {
+                return match serde_json::from_str::<Value>(v).ok()? {
+                    Value::String(s) => Some(s),
+                    _ => None,
+                };
+            }
+        }
+    }
+    None
+}
+
 fn yaml_scalar(value: &str) -> String {
     Value::String(value.to_string()).to_string()
 }
 
 fn yaml_list(values: &[String]) -> String {
     Value::from(values.to_vec()).to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_proposal(verify_cmd: Option<&str>) -> Proposal {
+        Proposal {
+            title: "t".into(),
+            summary: "s".into(),
+            why_now: vec![],
+            effort_estimate: EffortEstimate::Small,
+            risk_note: "r".into(),
+            task_type: "chore".into(),
+            target_paths: vec![],
+            acceptance_criteria: vec![],
+            research_ref: None,
+            review: ReviewMode::Auto,
+            verify_cmd: verify_cmd.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn frontmatter_field_reads_a_set_value() {
+        let description = render_description(&sample_proposal(Some("cargo test")));
+        assert_eq!(
+            frontmatter_field(Some(&description), "verify_cmd"),
+            Some("cargo test".to_string())
+        );
+    }
+
+    #[test]
+    fn frontmatter_field_is_none_for_a_null_value() {
+        let description = render_description(&sample_proposal(None));
+        assert_eq!(frontmatter_field(Some(&description), "verify_cmd"), None);
+    }
+
+    #[test]
+    fn frontmatter_field_is_none_for_an_absent_key() {
+        let description = render_description(&sample_proposal(None));
+        assert_eq!(frontmatter_field(Some(&description), "no_such_key"), None);
+    }
+
+    #[test]
+    fn frontmatter_field_is_none_without_a_description() {
+        assert_eq!(frontmatter_field(None, "verify_cmd"), None);
+    }
 }

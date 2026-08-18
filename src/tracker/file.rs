@@ -163,6 +163,7 @@ mod tests {
             acceptance_criteria: vec![],
             research_ref: None,
             review: ReviewMode::Auto,
+            verify_cmd: None,
         }
     }
 

@@ -494,6 +494,7 @@ mod tests {
             acceptance_criteria: vec!["Idle flips after threshold".to_string()],
             research_ref: None,
             review: super::ReviewMode::Auto,
+            verify_cmd: None,
         }
     }
 

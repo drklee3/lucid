@@ -66,6 +66,7 @@ async fn main() -> anyhow::Result<()> {
         acceptance_criteria: vec!["NOTES.md exists and contains 'smoke test'".to_string()],
         research_ref: None,
         review: ReviewMode::Auto,
+        verify_cmd: None,
     };
     let issue_id = tracker.create_proposal(&proposal).await?;
     tracker.set_decision_state(&issue_id, DecisionState::Approved).await?;
