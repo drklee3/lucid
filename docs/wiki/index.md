@@ -20,7 +20,7 @@ An [LLM Wiki](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f)
 - [observability](architecture/observability.md) — mobile/notification UX, the deferred-dashboard decision, CLI-first v1
 - [error-stall-visibility](architecture/error-stall-visibility.md) — the most consistent gap across every system surveyed
 - [trace-correlation](architecture/trace-correlation.md) — tagging harness dispatches with OTel resource attributes so tracker items link straight to their trace
-- [worker-completion](architecture/worker-completion.md) — `CompletionMode` (commit-direct, no PR) and `ReviewMode` (auto/human/agent) as the resolution of the review-rework fork for issues with no PR
+- [worker-completion](architecture/worker-completion.md) — per-issue git worktree isolation + `gh`-driven PR completion, and `ReviewMode` (auto/human/agent) deciding who merges
 - [ci-quality-tooling](architecture/ci-quality-tooling.md) — cargo-deny over cargo-audit, SHA-pinned actions, zizmor annotations over SARIF, weekly-only cargo-mutants
 
 ## Research (`research/`)
