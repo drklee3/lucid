@@ -11,9 +11,10 @@
 //! one very slow dispatch delays the next tick's other work rather than running
 //! alongside it.
 //!
-//! State is in-memory only (`runs`) — lost on restart. Persisting it to `rusqlite`
-//! is a separate, already-deferred item (docs/FEATURES.md § Reconciliation loop),
-//! not repeated here.
+//! State (`runs`, PM-wake backoff timer, last presence mode) is persisted to a
+//! flat JSON file after every tick, so a restart resumes rather than forgetting
+//! in-flight tracking — same convention as `presence::override_file` and
+//! `presence::audit_log` (see [`crate::state::DaemonState`]).
 
 use crate::config::{Config, ObservabilityConfig, PresenceConfig};
 use crate::harness::HarnessProfile;
@@ -22,7 +23,7 @@ use crate::pr;
 use crate::presence::audit_log::AuditLog;
 use crate::presence::override_file::OverrideFile;
 use crate::presence::{self, PresenceMode, PresenceSourceList};
-use crate::state::WorkerRun;
+use crate::state::{DaemonState, WorkerRun};
 use crate::tracker::{DecisionState, TrackerAdapter, TrackerIssue};
 use crate::worker;
 use crate::worktree;
@@ -52,6 +53,7 @@ pub struct Daemon {
     runs: Mutex<HashMap<String, WorkerRun>>,
     last_pm_wake: Mutex<Option<chrono::DateTime<Utc>>>,
     last_mode: Mutex<Option<PresenceMode>>,
+    state_path: PathBuf,
 }
 
 impl Daemon {
@@ -66,6 +68,8 @@ impl Daemon {
             .override_path
             .clone()
             .unwrap_or_else(crate::config::default_override_path);
+        let state_path = DaemonState::default_path();
+        let loaded = DaemonState::load(&state_path);
         Self {
             tracker,
             profiles: config.harness_profiles.clone(),
@@ -90,10 +94,26 @@ impl Daemon {
             tick_interval: Duration::from_secs(config.daemon.tick_interval_secs),
             stall_timeout: Duration::from_secs(config.daemon.stall_timeout_secs),
             pm_wake_interval: Duration::from_secs(config.daemon.pm_wake_interval_mins * 60),
-            runs: Mutex::new(HashMap::new()),
-            last_pm_wake: Mutex::new(None),
-            last_mode: Mutex::new(None),
+            runs: Mutex::new(loaded.runs),
+            last_pm_wake: Mutex::new(loaded.last_pm_wake),
+            last_mode: Mutex::new(loaded.last_mode),
+            state_path,
         }
+    }
+
+    /// Snapshots the current in-memory state and writes it to `state_path`, so a
+    /// restart resumes from where the last tick left off.
+    ///
+    /// # Errors
+    /// Returns an error if the parent directory can't be created or the file
+    /// can't be written.
+    fn save_state(&self) -> anyhow::Result<()> {
+        let state = DaemonState {
+            runs: self.runs.lock().unwrap().clone(),
+            last_pm_wake: *self.last_pm_wake.lock().unwrap(),
+            last_mode: *self.last_mode.lock().unwrap(),
+        };
+        state.save(&self.state_path)
     }
 
     /// Runs until Ctrl-C. Foreground only — v1 has no detach/IPC story (see
@@ -117,6 +137,9 @@ impl Daemon {
                 () = tokio::time::sleep(self.tick_interval) => {
                     if let Err(e) = self.tick().await {
                         eprintln!("reconciliation tick failed: {e}");
+                    }
+                    if let Err(e) = self.save_state() {
+                        eprintln!("failed to persist daemon state: {e}");
                     }
                 }
             }
