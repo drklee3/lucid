@@ -178,10 +178,11 @@ filed, neither is updatable except by hand-editing the ticket.
 On the Linear backend, `--review agent` requires the `review:agent` label to
 already exist in the workspace — `LinearAdapter::label_id` never creates
 labels, so `task create` fails with Linear's own "label not found" error if it
-doesn't. Create the label in Linear first. Separately, every `task create`/
-`approve`/`reject` call requires six named workflow states to already exist in
-the target team (`Pending`, `Approved`, `In Review`, `Done`, `Rejected`,
-`Stale`) — decision state moves the issue's real ticket state, not a label; see
+doesn't. Create the label in Linear first. Separately, `task create`/`approve`
+require four named workflow states to already exist in the target team
+(`Pending`, `Approved`, `In Review`, `Done`) — decision state moves the issue's
+real ticket state, not a label. `task reject` doesn't need any of those: it
+archives the issue (`issueArchive`) rather than moving it to a state. See
 `docs/wiki/architecture/tracker-adapter.md` § Decision state: the issue's real
 ticket state, not a label.
 
