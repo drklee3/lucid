@@ -78,6 +78,38 @@ pub enum TaskCommand {
         #[arg(long)]
         config: Option<PathBuf>,
     },
+    /// File a new proposal directly, bypassing the PM gap-detection wake cycle
+    Create {
+        /// Issue title
+        title: String,
+        /// One-line summary; defaults to the title
+        #[arg(long)]
+        summary: Option<String>,
+        /// "Why now" bullet — repeatable
+        #[arg(long = "why-now")]
+        why_now: Vec<String>,
+        #[arg(long, value_enum, default_value_t = CliEffort::Medium)]
+        effort: CliEffort,
+        /// Risk note
+        #[arg(long, default_value = "")]
+        risk_note: String,
+        #[arg(long, default_value = "task")]
+        task_type: String,
+        /// Target path — repeatable
+        #[arg(long = "target-path")]
+        target_paths: Vec<String>,
+        /// Acceptance criterion — repeatable
+        #[arg(long = "acceptance-criteria")]
+        acceptance_criteria: Vec<String>,
+        #[arg(long, value_enum, default_value_t = CliReviewMode::Auto)]
+        review: CliReviewMode,
+        /// Deterministic check the `ReviewMode::Agent` gate runs before judging
+        /// the diff — overrides `daemon.verify_cmd` for this issue only
+        #[arg(long)]
+        verify_cmd: Option<String>,
+        #[arg(long)]
+        config: Option<PathBuf>,
+    },
     /// Reject an issue
     Reject {
         issue_id: String,
@@ -92,6 +124,20 @@ pub enum TaskCommand {
         #[arg(long)]
         config: Option<PathBuf>,
     },
+}
+
+#[derive(ValueEnum, Debug, Clone, Copy)]
+pub enum CliEffort {
+    Small,
+    Medium,
+    Large,
+}
+
+#[derive(ValueEnum, Debug, Clone, Copy)]
+pub enum CliReviewMode {
+    Auto,
+    Human,
+    Agent,
 }
 
 #[derive(ValueEnum, Debug, Clone, Copy)]

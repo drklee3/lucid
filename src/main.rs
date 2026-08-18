@@ -9,7 +9,7 @@ use lucid::config::{Config, default_override_path};
 use lucid::daemon::Daemon;
 use lucid::presence::override_file::{OverrideFile, OverrideMode};
 use lucid::presence::{self, PresenceMode, PresenceSourceList};
-use lucid::tracker::{DecisionState, decision_label};
+use lucid::tracker::{DecisionState, EffortEstimate, Proposal, ReviewMode, decision_label};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -50,6 +50,34 @@ async fn main() -> anyhow::Result<()> {
                 task_set_decision(&issue_id, DecisionState::Rejected, config).await
             }
             TaskCommand::DispatchNow { issue_id, config } => task_dispatch_now(&issue_id, config).await,
+            TaskCommand::Create {
+                title,
+                summary,
+                why_now,
+                effort,
+                risk_note,
+                task_type,
+                target_paths,
+                acceptance_criteria,
+                review,
+                verify_cmd,
+                config,
+            } => {
+                task_create(
+                    title,
+                    summary,
+                    why_now,
+                    effort,
+                    risk_note,
+                    task_type,
+                    target_paths,
+                    acceptance_criteria,
+                    review,
+                    verify_cmd,
+                    config,
+                )
+                .await
+            }
         },
     }
 }
@@ -246,6 +274,55 @@ fn task_state_to_decision(state: cli::TaskState) -> DecisionState {
         cli::TaskState::Done => DecisionState::Done,
         cli::TaskState::NeedsReview => DecisionState::NeedsReview,
     }
+}
+
+/// Files a new proposal directly through the tracker adapter — the same write
+/// path `pm::wake` uses, minus its `query_similar` dedup check: a human typing a
+/// title explicitly isn't the runaway re-filing case dedup guards against, so
+/// this always creates.
+#[allow(clippy::too_many_arguments)]
+async fn task_create(
+    title: String,
+    summary: Option<String>,
+    why_now: Vec<String>,
+    effort: cli::CliEffort,
+    risk_note: String,
+    task_type: String,
+    target_paths: Vec<String>,
+    acceptance_criteria: Vec<String>,
+    review: cli::CliReviewMode,
+    verify_cmd: Option<String>,
+    config: Option<PathBuf>,
+) -> anyhow::Result<()> {
+    let config = Config::load(&resolve_config_path(config))?;
+    let tracker = lucid::tracker::build(&config.tracker)?;
+
+    let review = match review {
+        cli::CliReviewMode::Auto => ReviewMode::Auto,
+        cli::CliReviewMode::Human => ReviewMode::Human,
+        cli::CliReviewMode::Agent => ReviewMode::Agent,
+    };
+    let proposal = Proposal {
+        summary: summary.unwrap_or_else(|| title.clone()),
+        title,
+        why_now,
+        effort_estimate: match effort {
+            cli::CliEffort::Small => EffortEstimate::Small,
+            cli::CliEffort::Medium => EffortEstimate::Medium,
+            cli::CliEffort::Large => EffortEstimate::Large,
+        },
+        risk_note,
+        task_type,
+        target_paths,
+        acceptance_criteria,
+        research_ref: None,
+        review,
+        verify_cmd,
+    };
+
+    let id = tracker.create_proposal(&proposal).await?;
+    println!("{id}");
+    Ok(())
 }
 
 async fn task_list(state: cli::TaskState, format: cli::OutputFormat, config: Option<PathBuf>) -> anyhow::Result<()> {
