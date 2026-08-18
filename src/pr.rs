@@ -3,12 +3,66 @@
 //! docs/wiki/architecture/worker-completion.md: lucid never resolves a conflict
 //! itself, it only asks `gh` to merge and reports back whatever `gh` says.
 
+use serde::Deserialize;
 use std::path::Path;
 use tokio::process::Command;
 
 pub struct PullRequest {
     pub url: String,
     pub branch: String,
+}
+
+/// A PR's merge status, as reported by `gh pr view --json state`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrStatus {
+    Open,
+    Merged,
+    Closed,
+}
+
+#[derive(Deserialize)]
+struct PrView {
+    state: String,
+}
+
+/// Looks up an existing PR's status by branch name — the read half of the
+/// merge-status reconciliation loop (see docs/wiki/architecture/worker-completion.md):
+/// a human merging/closing a `NeedsReview` PR by hand on GitHub is the "decision"
+/// this reads back, never one lucid makes itself.
+///
+/// # Errors
+/// Returns an error if `gh` itself fails to run or exits non-zero for a reason
+/// other than "no PR found for this branch" — that case returns `Ok(None)`.
+pub async fn status(repo_root: &Path, branch: &str) -> anyhow::Result<Option<PrStatus>> {
+    let output = Command::new("gh")
+        .args(["pr", "view", branch, "--json", "state"])
+        .current_dir(repo_root)
+        .output()
+        .await
+        .map_err(|e| anyhow::anyhow!("running `gh pr view` in {}: {e}", repo_root.display()))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("no pull requests found") {
+            return Ok(None);
+        }
+        anyhow::bail!("gh pr view of {branch} failed: {stderr}");
+    }
+
+    let view: PrView = serde_json::from_slice(&output.stdout)
+        .map_err(|e| anyhow::anyhow!("parsing `gh pr view` output for {branch}: {e}"))?;
+    Ok(Some(classify_state(&view.state)))
+}
+
+/// Maps `gh`'s own `state` field (`"OPEN"` / `"MERGED"` / `"CLOSED"`) to `PrStatus`
+/// — any other value is treated as `Open` rather than erroring, since it's read-only
+/// status that only ever gates whether reconciliation touches the issue.
+fn classify_state(state: &str) -> PrStatus {
+    match state {
+        "MERGED" => PrStatus::Merged,
+        "CLOSED" => PrStatus::Closed,
+        _ => PrStatus::Open,
+    }
 }
 
 /// `git push -u origin <branch>` from inside the worktree.
@@ -99,4 +153,17 @@ pub async fn merge(repo_root: &Path, branch: &str) -> anyhow::Result<()> {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classify_state_maps_gh_states() {
+        assert_eq!(classify_state("MERGED"), PrStatus::Merged);
+        assert_eq!(classify_state("CLOSED"), PrStatus::Closed);
+        assert_eq!(classify_state("OPEN"), PrStatus::Open);
+        assert_eq!(classify_state("SOMETHING_UNKNOWN"), PrStatus::Open);
+    }
 }

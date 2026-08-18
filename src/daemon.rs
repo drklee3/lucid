@@ -18,12 +18,14 @@
 use crate::config::{Config, ObservabilityConfig, PresenceConfig};
 use crate::harness::HarnessProfile;
 use crate::pm;
+use crate::pr;
 use crate::presence::audit_log::AuditLog;
 use crate::presence::override_file::OverrideFile;
 use crate::presence::{self, PresenceMode, PresenceSourceList};
 use crate::state::WorkerRun;
-use crate::tracker::{DecisionState, TrackerAdapter};
+use crate::tracker::{DecisionState, TrackerAdapter, TrackerIssue};
 use crate::worker;
+use crate::worktree;
 use chrono::Utc;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -121,9 +123,12 @@ impl Daemon {
         }
     }
 
-    /// One reconciliation pass: resolve presence, and if autonomous, dispatch any
+    /// One reconciliation pass: reconcile any `NeedsReview` issues against their
+    /// PR's merge status, resolve presence, and if autonomous, dispatch any
     /// newly-approved issues plus run a PM wake if its interval has elapsed.
     async fn tick(&self) -> anyhow::Result<()> {
+        self.reconcile_needs_review().await?;
+
         let idle_threshold =
             Duration::from_secs(u64::from(self.presence_cfg.idle_threshold_minutes) * 60);
         let mode =
@@ -138,6 +143,22 @@ impl Daemon {
 
         self.dispatch_approved_issues().await?;
         self.maybe_wake_pm().await?;
+        Ok(())
+    }
+
+    /// Closes the loop on issues a human has already decided on GitHub: this only
+    /// records a decision already made (via merge or close), it never dispatches
+    /// new work — which is why it runs on every tick regardless of presence mode.
+    async fn reconcile_needs_review(&self) -> anyhow::Result<()> {
+        let needs_review = self
+            .tracker
+            .query_by_decision_state(DecisionState::NeedsReview)
+            .await?;
+        for issue in needs_review {
+            let branch = worktree::branch_name(&issue.id);
+            let status = pr::status(&self.workdir, &branch).await?;
+            reconcile_issue(self.tracker.as_ref(), &issue, status).await?;
+        }
         Ok(())
     }
 
@@ -248,5 +269,132 @@ impl Daemon {
     #[must_use]
     pub fn runs_snapshot(&self) -> Vec<WorkerRun> {
         self.runs.lock().unwrap().values().cloned().collect()
+    }
+}
+
+/// Applies a `NeedsReview` issue's already-looked-up PR status. `Merged` closes
+/// the loop as `Done`; `Closed` (without merging) as `Rejected`. `Open` or `None`
+/// (no PR found for this branch yet) leaves the issue untouched — there's no
+/// human decision yet to record.
+async fn reconcile_issue(
+    tracker: &dyn TrackerAdapter,
+    issue: &TrackerIssue,
+    status: Option<pr::PrStatus>,
+) -> anyhow::Result<()> {
+    let (state, note) = match status {
+        Some(pr::PrStatus::Merged) => (DecisionState::Done, "PR merged on GitHub — reconciled to Done."),
+        Some(pr::PrStatus::Closed) => (
+            DecisionState::Rejected,
+            "PR closed without merging on GitHub — reconciled to Rejected.",
+        ),
+        Some(pr::PrStatus::Open) | None => return Ok(()),
+    };
+    tracker.attach_note(&issue.id, note).await?;
+    tracker.set_decision_state(&issue.id, state).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tracker::{Proposal, ReviewMode};
+    use async_trait::async_trait;
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct MockTracker {
+        notes: Mutex<Vec<(String, String)>>,
+        decisions: Mutex<Vec<(String, DecisionState)>>,
+    }
+
+    #[async_trait]
+    impl TrackerAdapter for MockTracker {
+        async fn create_proposal(&self, _proposal: &Proposal) -> anyhow::Result<String> {
+            unimplemented!("not exercised by these tests")
+        }
+        async fn set_decision_state(
+            &self,
+            issue_id: &str,
+            state: DecisionState,
+        ) -> anyhow::Result<()> {
+            self.decisions
+                .lock()
+                .unwrap()
+                .push((issue_id.to_string(), state));
+            Ok(())
+        }
+        async fn query_by_decision_state(
+            &self,
+            _state: DecisionState,
+        ) -> anyhow::Result<Vec<TrackerIssue>> {
+            unimplemented!("not exercised by these tests")
+        }
+        async fn query_similar(&self, _title: &str) -> anyhow::Result<Vec<TrackerIssue>> {
+            unimplemented!("not exercised by these tests")
+        }
+        async fn attach_note(&self, issue_id: &str, body: &str) -> anyhow::Result<()> {
+            self.notes
+                .lock()
+                .unwrap()
+                .push((issue_id.to_string(), body.to_string()));
+            Ok(())
+        }
+    }
+
+    fn issue() -> TrackerIssue {
+        TrackerIssue {
+            id: "ENG-9".into(),
+            title: "Something needing review".into(),
+            description: None,
+            decision_state: Some(DecisionState::NeedsReview),
+            review: ReviewMode::Agent,
+        }
+    }
+
+    #[tokio::test]
+    async fn merged_pr_marks_the_issue_done() {
+        let tracker = MockTracker::default();
+        reconcile_issue(&tracker, &issue(), Some(pr::PrStatus::Merged))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            *tracker.decisions.lock().unwrap(),
+            vec![("ENG-9".to_string(), DecisionState::Done)]
+        );
+        assert_eq!(tracker.notes.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn closed_without_merge_marks_the_issue_rejected() {
+        let tracker = MockTracker::default();
+        reconcile_issue(&tracker, &issue(), Some(pr::PrStatus::Closed))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            *tracker.decisions.lock().unwrap(),
+            vec![("ENG-9".to_string(), DecisionState::Rejected)]
+        );
+        assert_eq!(tracker.notes.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn open_pr_is_left_untouched() {
+        let tracker = MockTracker::default();
+        reconcile_issue(&tracker, &issue(), Some(pr::PrStatus::Open))
+            .await
+            .unwrap();
+
+        assert!(tracker.decisions.lock().unwrap().is_empty());
+        assert!(tracker.notes.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn no_pr_found_is_left_untouched() {
+        let tracker = MockTracker::default();
+        reconcile_issue(&tracker, &issue(), None).await.unwrap();
+
+        assert!(tracker.decisions.lock().unwrap().is_empty());
+        assert!(tracker.notes.lock().unwrap().is_empty());
     }
 }
