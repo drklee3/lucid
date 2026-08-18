@@ -25,17 +25,21 @@ pub struct LinearAdapter {
     client: reqwest::Client,
     api_key: String,
     team_key: String,
+    project_key: Option<String>,
 }
 
 impl LinearAdapter {
     /// `team_key` is Linear's short team key (e.g. `ENG`), not the team's UUID —
     /// it's what a human can read off the issue identifiers they're triaging.
+    /// `project_key` optionally scopes lucid to a single project within that team
+    /// (Linear issues don't require a project, so `None` leaves it team-wide).
     #[must_use]
-    pub fn new(api_key: String, team_key: String) -> Self {
+    pub fn new(api_key: String, team_key: String, project_key: Option<String>) -> Self {
         Self {
             client: reqwest::Client::new(),
             api_key,
             team_key,
+            project_key,
         }
     }
 
@@ -83,6 +87,17 @@ impl LinearAdapter {
             .ok_or_else(|| anyhow!("linear graphql response had neither data nor errors: {body}"))
     }
 
+    /// Team scope, plus project scope when `project_key` is configured. Built as a
+    /// JSON value (rather than a `$project` GraphQL variable) so an unset project
+    /// omits the clause entirely instead of filtering for a literal null project.
+    fn team_and_project_filter(&self) -> Value {
+        let mut filter = json!({ "team": { "key": { "eq": self.team_key } } });
+        if let Some(project) = &self.project_key {
+            filter["project"] = json!({ "name": { "eq": project } });
+        }
+        filter
+    }
+
     /// Linear labels are addressed by UUID everywhere except this lookup, and the
     /// daemon never creates them — a missing label is a workspace-setup error, not
     /// something to paper over by silently mutating the workspace's label set.
@@ -110,6 +125,28 @@ impl LinearAdapter {
                     self.team_key
                 )
             })
+    }
+
+    /// Resolves `project_key` (a project name) to its id — only called when
+    /// `project_key` is configured. Like `label_id`/`state_id`, lucid never
+    /// creates projects: a missing one is a workspace-setup error.
+    async fn project_id(&self, name: &str) -> anyhow::Result<String> {
+        const QUERY: &str = r"
+            query ProjectId($name: String!) {
+              projects(filter: { name: { eq: $name } }, first: 1) {
+                nodes { id }
+              }
+            }
+        ";
+
+        let data: ProjectsData = self.graphql(QUERY, json!({ "name": name })).await?;
+
+        data.projects
+            .nodes
+            .into_iter()
+            .next()
+            .map(|node| node.id)
+            .ok_or_else(|| anyhow!("project `{name}` does not exist — create it in Linear first"))
     }
 
     /// Decision state moves the issue's real `state` field, not a label — see
@@ -146,9 +183,9 @@ impl LinearAdapter {
     /// of a distinct workflow state. See `decision_state_name`.
     async fn query_archived(&self) -> anyhow::Result<Vec<TrackerIssue>> {
         const QUERY: &str = r"
-            query Archived($team: String!, $first: Int!, $after: String) {
+            query Archived($filter: IssueFilter!, $first: Int!, $after: String) {
               issues(
-                filter: { team: { key: { eq: $team } } }
+                filter: $filter
                 includeArchived: true
                 first: $first
                 after: $after
@@ -165,7 +202,7 @@ impl LinearAdapter {
             let data: IssuesData = self
                 .graphql(
                     QUERY,
-                    json!({ "team": self.team_key, "first": PAGE_SIZE, "after": cursor }),
+                    json!({ "filter": self.team_and_project_filter(), "first": PAGE_SIZE, "after": cursor }),
                 )
                 .await?;
 
@@ -202,7 +239,10 @@ impl TrackerAdapter for LinearAdapter {
         ";
 
         let pending_state_id = self
-            .state_id(decision_state_name(DecisionState::Pending).expect("Pending is always a real state"))
+            .state_id(
+                decision_state_name(DecisionState::Pending)
+                    .expect("Pending is always a real state"),
+            )
             .await?;
         let review_label_id = self.label_id(review_label(proposal.review)).await?;
         let team = team_id(
@@ -212,13 +252,16 @@ impl TrackerAdapter for LinearAdapter {
         )
         .ok_or_else(|| anyhow!("no Linear team with key `{}`", self.team_key))?;
 
-        let input = json!({
+        let mut input = json!({
             "teamId": team,
             "title": proposal.title,
             "description": render_description(proposal),
             "stateId": pending_state_id,
             "labelIds": [review_label_id],
         });
+        if let Some(project) = &self.project_key {
+            input["projectId"] = json!(self.project_id(project).await?);
+        }
 
         let data: IssueCreateData = self.graphql(MUTATION, json!({ "input": input })).await?;
         let payload = data.issue_create;
@@ -273,11 +316,14 @@ impl TrackerAdapter for LinearAdapter {
     /// either query returns every archived issue in the team. Not a problem
     /// today: nothing calls this with either variant (`Rejected` is set-only via
     /// `lucid task reject`, `StaleClosed` isn't implemented yet).
-    async fn query_by_decision_state(&self, state: DecisionState) -> anyhow::Result<Vec<TrackerIssue>> {
+    async fn query_by_decision_state(
+        &self,
+        state: DecisionState,
+    ) -> anyhow::Result<Vec<TrackerIssue>> {
         const QUERY: &str = r"
-            query ByState($state: String!, $team: String!, $first: Int!, $after: String) {
+            query ByState($filter: IssueFilter!, $first: Int!, $after: String) {
               issues(
-                filter: { state: { name: { eq: $state } }, team: { key: { eq: $team } } }
+                filter: $filter
                 first: $first
                 after: $after
               ) {
@@ -291,6 +337,9 @@ impl TrackerAdapter for LinearAdapter {
             return self.query_archived().await;
         };
 
+        let mut filter = self.team_and_project_filter();
+        filter["state"] = json!({ "name": { "eq": state_name } });
+
         // Callers use this for the rejected-state dedup check, where a truncated page
         // reads as "no match" and files a duplicate — see
         // docs/wiki/architecture/dedup-death-loop.md. Paginate fully.
@@ -301,8 +350,7 @@ impl TrackerAdapter for LinearAdapter {
                 .graphql(
                     QUERY,
                     json!({
-                        "state": state_name,
-                        "team": self.team_key,
+                        "filter": filter,
                         "first": PAGE_SIZE,
                         "after": cursor,
                     }),
@@ -329,10 +377,10 @@ impl TrackerAdapter for LinearAdapter {
 
     async fn query_similar(&self, title: &str) -> anyhow::Result<Vec<TrackerIssue>> {
         const QUERY: &str = r"
-            query Similar($term: String!, $team: String!, $first: Int!) {
+            query Similar($term: String!, $filter: IssueFilter!, $first: Int!) {
               searchIssues(
                 term: $term
-                filter: { team: { key: { eq: $team } } }
+                filter: $filter
                 includeArchived: true
                 first: $first
               ) {
@@ -347,7 +395,7 @@ impl TrackerAdapter for LinearAdapter {
         let data: SearchData = self
             .graphql(
                 QUERY,
-                json!({ "term": title, "team": self.team_key, "first": 25 }),
+                json!({ "term": title, "filter": self.team_and_project_filter(), "first": 25 }),
             )
             .await?;
 
@@ -388,7 +436,6 @@ const TEAM_ID_QUERY: &str = r"
 fn team_id(data: &TeamsData) -> Option<String> {
     data.teams.nodes.first().map(|node| node.id.clone())
 }
-
 
 #[derive(Deserialize)]
 struct GraphQlResponse<T> {
@@ -506,6 +553,11 @@ struct LabelsData {
 }
 
 #[derive(Deserialize)]
+struct ProjectsData {
+    projects: Nodes<IdNode>,
+}
+
+#[derive(Deserialize)]
 struct WorkflowStatesData {
     #[serde(rename = "workflowStates")]
     workflow_states: Nodes<IdNode>,
@@ -559,8 +611,8 @@ struct CommentCreateData {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::EffortEstimate;
+    use super::*;
 
     fn sample() -> Proposal {
         Proposal {
@@ -665,6 +717,31 @@ mod tests {
             .collect();
         assert_eq!(messages, ["Authentication required"]);
         assert!(response.data.is_none());
+    }
+
+    #[test]
+    fn project_filter_omitted_when_project_key_unset() {
+        let adapter = LinearAdapter::new("key".to_string(), "ENG".to_string(), None);
+        assert_eq!(
+            adapter.team_and_project_filter(),
+            json!({ "team": { "key": { "eq": "ENG" } } })
+        );
+    }
+
+    #[test]
+    fn project_filter_included_when_project_key_set() {
+        let adapter = LinearAdapter::new(
+            "key".to_string(),
+            "ENG".to_string(),
+            Some("Lucid".to_string()),
+        );
+        assert_eq!(
+            adapter.team_and_project_filter(),
+            json!({
+                "team": { "key": { "eq": "ENG" } },
+                "project": { "name": { "eq": "Lucid" } },
+            })
+        );
     }
 
     #[test]

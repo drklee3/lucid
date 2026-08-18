@@ -31,6 +31,11 @@ pub struct TrackerConfig {
     /// unused by other backends.
     #[serde(default)]
     pub team_key: Option<String>,
+    /// Linear project name/slug/id to scope issues to within `team_key`. Optional —
+    /// Linear issues don't require a project, and omitting this leaves lucid
+    /// operating across the whole team as before.
+    #[serde(default)]
+    pub project_key: Option<String>,
     /// Where `FileTracker` persists its JSON store — required when
     /// `backend = "file"`, unused by other backends.
     #[serde(default)]
@@ -190,7 +195,8 @@ mod tests {
             otlp_endpoint = "http://localhost:4317"
             trace_ui_base_url = "http://localhost:6006"
         "#;
-        let path = std::env::temp_dir().join(format!("lucid-config-test-{}.toml", uuid::Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("lucid-config-test-{}.toml", uuid::Uuid::new_v4()));
         std::fs::write(&path, toml).unwrap();
 
         let config = Config::load(&path).unwrap();

@@ -150,15 +150,14 @@ pub trait TrackerAdapter: Send + Sync {
     async fn create_proposal(&self, proposal: &Proposal) -> anyhow::Result<String>;
 
     /// Move an existing issue's decision state (approve/reject/stale-close).
-    async fn set_decision_state(
-        &self,
-        issue_id: &str,
-        state: DecisionState,
-    ) -> anyhow::Result<()>;
+    async fn set_decision_state(&self, issue_id: &str, state: DecisionState) -> anyhow::Result<()>;
 
     /// Issues currently in a given decision state — used for dedup (rejected
     /// check) and for finding open work (e.g. `Approved`, ready to dispatch).
-    async fn query_by_decision_state(&self, state: DecisionState) -> anyhow::Result<Vec<TrackerIssue>>;
+    async fn query_by_decision_state(
+        &self,
+        state: DecisionState,
+    ) -> anyhow::Result<Vec<TrackerIssue>>;
 
     /// Content-similarity search, for the death-loop-prevention dedup check (see
     /// docs/wiki/architecture/dedup-death-loop.md) — implementation decides what
@@ -184,24 +183,26 @@ pub trait TrackerAdapter: Send + Sync {
 pub fn build(config: &crate::config::TrackerConfig) -> anyhow::Result<Box<dyn TrackerAdapter>> {
     match config.backend.as_str() {
         "file" => {
-            let path = config
-                .file_path
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("tracker.file_path required for backend = \"file\""))?;
+            let path = config.file_path.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("tracker.file_path required for backend = \"file\"")
+            })?;
             Ok(Box::new(file::FileTracker::open(path)?))
         }
         "linear" => {
-            let team_key = config
-                .team_key
-                .clone()
-                .ok_or_else(|| anyhow::anyhow!("tracker.team_key required for backend = \"linear\""))?;
-            let env_var = config
-                .api_key_env
-                .as_deref()
-                .ok_or_else(|| anyhow::anyhow!("tracker.api_key_env required for backend = \"linear\""))?;
-            let api_key = std::env::var(env_var)
-                .map_err(|_| anyhow::anyhow!("env var `{env_var}` (tracker.api_key_env) is not set"))?;
-            Ok(Box::new(linear::LinearAdapter::new(api_key, team_key)))
+            let team_key = config.team_key.clone().ok_or_else(|| {
+                anyhow::anyhow!("tracker.team_key required for backend = \"linear\"")
+            })?;
+            let env_var = config.api_key_env.as_deref().ok_or_else(|| {
+                anyhow::anyhow!("tracker.api_key_env required for backend = \"linear\"")
+            })?;
+            let api_key = std::env::var(env_var).map_err(|_| {
+                anyhow::anyhow!("env var `{env_var}` (tracker.api_key_env) is not set")
+            })?;
+            Ok(Box::new(linear::LinearAdapter::new(
+                api_key,
+                team_key,
+                config.project_key.clone(),
+            )))
         }
         other => Err(anyhow::anyhow!(
             "unknown tracker backend `{other}` (expected \"file\" or \"linear\")"
@@ -240,7 +241,11 @@ pub fn render_description(proposal: &Proposal) -> String {
         yaml_list(&proposal.acceptance_criteria)
     );
     let _ = writeln!(out, "research_ref: {research_ref}");
-    let _ = writeln!(out, "review: {}", yaml_scalar(review_label(proposal.review)));
+    let _ = writeln!(
+        out,
+        "review: {}",
+        yaml_scalar(review_label(proposal.review))
+    );
     let verify_cmd = proposal
         .verify_cmd
         .as_deref()
