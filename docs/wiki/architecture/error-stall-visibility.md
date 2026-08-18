@@ -18,7 +18,6 @@ This confirms, in a live tracker rather than an anecdote, exactly the "silent/la
 - Rate-limit-specific handling as a distinct failure class (vs. generic retry).
 - A runaway/self-replicating-session guard.
 - Bounded cleanup of completed session state.
-- Persistence of blocked/error state across a restart (Symphony's own dashboard state doesn't survive a restart either — worth not inheriting that specific weakness; see [tech stack](tech-stack.md) for why `rusqlite` was chosen partly for this reason).
 
 ## The plausible differentiator
 

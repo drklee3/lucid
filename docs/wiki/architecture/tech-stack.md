@@ -18,7 +18,7 @@ Once the language choice and the D-Bus-library choice are separated and checked 
 | Async runtime | `tokio` | Poll loop, concurrent session tracking |
 | D-Bus / presence | `zbus` | Async-native, no disadvantage vs. any other language here |
 | Linear GraphQL | `reqwest` + `serde` | Typed structs for the specific queries/mutations behind the tracker-adapter interface — a real advantage over Python's dict-shaped JSON for a deterministic backend |
-| Local state store | `rusqlite` | Daemon's own bookkeeping (running/blocked/retry state, session identity for continuation-turn resume) — specifically so a restart doesn't lose in-flight state the way Symphony's does |
+| Local state store | `serde_json` + flat file | Daemon's own bookkeeping (running/blocked/retry state, PM-wake timer, last presence mode) persisted to `daemon-state.json` — specifically so a restart doesn't lose in-flight state the way Symphony's does. `rusqlite` was in this slot originally but never wired up, then removed unused in favor of the flat-file convention already used elsewhere in the system — see [persistence](persistence.md) |
 | Git worktree + harness dispatch | `std::process::Command` / `tokio::process` | Shelling out to `git` and to whichever harness CLI — no library needed, same approach Symphony and cyrus both take regardless of their own implementation language |
 
 ## Not a dependency
