@@ -18,6 +18,7 @@
 use crate::config::{Config, ObservabilityConfig, PresenceConfig};
 use crate::harness::HarnessProfile;
 use crate::pm;
+use crate::presence::audit_log::AuditLog;
 use crate::presence::override_file::OverrideFile;
 use crate::presence::{self, PresenceMode, PresenceSourceList};
 use crate::state::WorkerRun;
@@ -38,6 +39,7 @@ pub struct Daemon {
     presence_sources: PresenceSourceList,
     presence_cfg: PresenceConfig,
     override_file: OverrideFile,
+    audit_log: AuditLog,
     workdir: PathBuf,
     base_branch: String,
     worktree_root: PathBuf,
@@ -47,6 +49,7 @@ pub struct Daemon {
     pm_wake_interval: Duration,
     runs: Mutex<HashMap<String, WorkerRun>>,
     last_pm_wake: Mutex<Option<chrono::DateTime<Utc>>>,
+    last_mode: Mutex<Option<PresenceMode>>,
 }
 
 impl Daemon {
@@ -76,6 +79,7 @@ impl Daemon {
                 proposal_cap_per_wake: config.presence.proposal_cap_per_wake,
                 override_path: Some(override_path.clone()),
             },
+            audit_log: AuditLog::new(AuditLog::default_path_from_override(&override_path)),
             override_file: OverrideFile::new(override_path),
             workdir: config.daemon.workdir.clone(),
             base_branch: config.daemon.base_branch.clone(),
@@ -86,6 +90,7 @@ impl Daemon {
             pm_wake_interval: Duration::from_secs(config.daemon.pm_wake_interval_mins * 60),
             runs: Mutex::new(HashMap::new()),
             last_pm_wake: Mutex::new(None),
+            last_mode: Mutex::new(None),
         }
     }
 
@@ -123,6 +128,9 @@ impl Daemon {
             Duration::from_secs(u64::from(self.presence_cfg.idle_threshold_minutes) * 60);
         let mode =
             presence::resolve(&self.presence_sources, &self.override_file, idle_threshold).await?;
+
+        let previous = self.last_mode.lock().unwrap().replace(mode);
+        self.audit_log.record(previous, mode)?;
 
         if mode != PresenceMode::Autonomous {
             return Ok(());

@@ -4,6 +4,7 @@
 //! them conservatively — any source reporting "not idle" wins. `logind` is the
 //! reference implementation, not the only one that will ever exist.
 
+pub mod audit_log;
 pub mod logind;
 pub mod override_file;
 
