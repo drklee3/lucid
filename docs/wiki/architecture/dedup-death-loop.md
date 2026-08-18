@@ -3,7 +3,7 @@
 Before filing, the PM checks three things:
 
 1. Open Linear issues with matching content hash/title similarity — queried **live via MCP**, not a local mirror.
-2. Issues carrying the rejected label (👎'd, or auto-stale-closed within N days — recommend 30).
+2. Issues in the `Rejected` decision state (👎'd, or auto-stale-closed within N days — recommend 30) — for `LinearAdapter` this is the issue's real ticket state, not a label; see [Tracker adapter](tracker-adapter.md#decision-state-the-issues-real-ticket-state-not-a-label).
 3. Open PRs touching the same files.
 
 Any hit blocks filing. Linear itself is the source of truth for this check — no separate local dedup store to keep in sync or lose.

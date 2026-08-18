@@ -143,7 +143,7 @@ never prints secrets, even local-only ones.
 
 A terminal convenience over the tracker's own UI (Linear), not a second source of
 truth — every subcommand goes through the same `TrackerAdapter` the daemon itself
-uses (`set_decision_state`/`query_by_label`), so e.g. `lucid task approve` has the
+uses (`set_decision_state`/`query_by_decision_state`), so e.g. `lucid task approve` has the
 identical effect to approving the issue directly in Linear. See
 `docs/wiki/architecture/worker-completion.md`.
 
@@ -178,7 +178,12 @@ filed, neither is updatable except by hand-editing the ticket.
 On the Linear backend, `--review agent` requires the `review:agent` label to
 already exist in the workspace — `LinearAdapter::label_id` never creates
 labels, so `task create` fails with Linear's own "label not found" error if it
-doesn't. Create the label in Linear first.
+doesn't. Create the label in Linear first. Separately, every `task create`/
+`approve`/`reject` call requires six named workflow states to already exist in
+the target team (`Pending`, `Approved`, `In Review`, `Done`, `Rejected`,
+`Stale`) — decision state moves the issue's real ticket state, not a label; see
+`docs/wiki/architecture/tracker-adapter.md` § Decision state: the issue's real
+ticket state, not a label.
 
 `lucid task approve`/`reject` only change decision state — there's no `--review`
 flag to change `ReviewMode` after creation; that's set once at proposal-filing time
