@@ -291,6 +291,7 @@ pub async fn dispatch_and_finalize(
     workdir: &Path,
     stall_timeout: Duration,
     completion_mode: CompletionMode,
+    verify_cmd: Option<&str>,
 ) -> anyhow::Result<WorkerRun> {
     let prompt = dispatch_prompt(issue, completion_mode);
     let run = run_dispatch(
@@ -304,7 +305,17 @@ pub async fn dispatch_and_finalize(
         completion_mode,
     )
     .await?;
-    finalize_completion(tracker, issue, &run, profiles, observability, workdir, stall_timeout).await?;
+    finalize_completion(
+        tracker,
+        issue,
+        &run,
+        profiles,
+        observability,
+        workdir,
+        stall_timeout,
+        verify_cmd,
+    )
+    .await?;
     Ok(run)
 }
 
@@ -397,6 +408,21 @@ async fn agent_review(
     Ok(parse_verdict(&outcome.result_text.unwrap_or_default()))
 }
 
+/// Resolves the command `ReviewMode::Agent` runs before its LLM diff review, in
+/// priority order: an explicit per-task override (the exception — a docs-only
+/// task, a monorepo task scoped to one package), then a repo-wide default
+/// (`daemon.verify_cmd` — the common case, same command for every task, same shape
+/// as a CI config). No auto-detection: guessing a command from repo conventions
+/// (e.g. `cargo test`) would silently narrow "verified" to whatever that one guess
+/// covers, while the repo's real CI might also lint, typecheck, or run several
+/// suites — a partial check that looks like a real gate is worse than no gate.
+/// `None` at both tiers leaves the review agent to infer its own command per task,
+/// same as before `verify_cmd` existed at all.
+fn resolve_verify_cmd(issue: &TrackerIssue, repo_default: Option<&str>) -> Option<String> {
+    crate::tracker::frontmatter_field(issue.description.as_deref(), "verify_cmd")
+        .or_else(|| repo_default.map(str::to_string))
+}
+
 /// Decides what a successful dispatch means for the tracker item — the completion
 /// half of "how does a Worker finish a task" (see
 /// docs/wiki/architecture/worker-completion.md). Never called for a `Failed`/
@@ -407,6 +433,7 @@ async fn agent_review(
 /// Returns an error if a tracker call fails, or (for `ReviewMode::Agent`) if the
 /// review dispatch itself fails to even run — a review that ran but returned an
 /// unparseable verdict is *not* an error, it routes to `NeedsReview` instead.
+#[allow(clippy::too_many_arguments)]
 pub async fn finalize_completion(
     tracker: &dyn TrackerAdapter,
     issue: &TrackerIssue,
@@ -415,6 +442,7 @@ pub async fn finalize_completion(
     observability: &ObservabilityConfig,
     workdir: &Path,
     stall_timeout: Duration,
+    verify_cmd: Option<&str>,
 ) -> anyhow::Result<()> {
     if run.phase != WorkerPhase::Succeeded {
         return Ok(());
@@ -428,7 +456,7 @@ pub async fn finalize_completion(
                 .await
         }
         ReviewMode::Agent => {
-            let verify_cmd = crate::tracker::frontmatter_field(issue.description.as_deref(), "verify_cmd");
+            let verify_cmd = resolve_verify_cmd(issue, verify_cmd);
             if let Some(cmd) = &verify_cmd {
                 match run_verify_cmd(workdir, cmd, stall_timeout).await {
                     Ok(true) => {} // falls through to the diff/acceptance-criteria review below
@@ -795,6 +823,7 @@ mod tests {
             &observability(),
             &std::env::temp_dir(),
             Duration::from_secs(5),
+            None,
         )
         .await
         .unwrap();
@@ -829,6 +858,7 @@ mod tests {
             &observability(),
             &std::env::temp_dir(),
             Duration::from_secs(5),
+            None,
         )
         .await
         .unwrap();
@@ -866,6 +896,7 @@ mod tests {
             &observability(),
             &std::env::temp_dir(),
             Duration::from_secs(5),
+            None,
         )
         .await
         .unwrap();
@@ -895,6 +926,40 @@ mod tests {
         }
     }
 
+    fn plain_issue(id: &str, description: Option<&str>) -> TrackerIssue {
+        TrackerIssue {
+            id: id.to_string(),
+            title: "t".into(),
+            description: description.map(str::to_string),
+            decision_state: Some(DecisionState::Approved),
+            review: ReviewMode::Agent,
+        }
+    }
+
+    #[test]
+    fn resolve_verify_cmd_prefers_task_level_over_repo_default() {
+        let issue = plain_issue("ENG-20", Some("---\nverify_cmd: \"task cmd\"\n---\n\nbody"));
+        assert_eq!(
+            resolve_verify_cmd(&issue, Some("repo cmd")),
+            Some("task cmd".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_verify_cmd_falls_back_to_repo_default() {
+        let issue = plain_issue("ENG-21", None);
+        assert_eq!(
+            resolve_verify_cmd(&issue, Some("repo cmd")),
+            Some("repo cmd".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_verify_cmd_is_none_when_neither_tier_is_set() {
+        let issue = plain_issue("ENG-22", None);
+        assert_eq!(resolve_verify_cmd(&issue, None), None);
+    }
+
     #[tokio::test]
     async fn finalize_completion_agent_verify_cmd_failure_skips_review_and_needs_review() {
         let tracker = MockTracker::default();
@@ -916,6 +981,7 @@ mod tests {
             &observability(),
             &std::env::temp_dir(),
             Duration::from_secs(5),
+            None,
         )
         .await
         .unwrap();
@@ -960,6 +1026,7 @@ mod tests {
             &observability(),
             &std::env::temp_dir(),
             Duration::from_secs(5),
+            None,
         )
         .await
         .unwrap();

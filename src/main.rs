@@ -311,6 +311,7 @@ async fn task_dispatch_now(issue_id: &str, config: Option<PathBuf>) -> anyhow::R
         &config.daemon.workdir,
         Duration::from_secs(config.daemon.stall_timeout_secs),
         config.daemon.completion_mode,
+        config.daemon.verify_cmd.as_deref(),
     )
     .await?;
 

@@ -41,6 +41,7 @@ pub struct Daemon {
     override_file: OverrideFile,
     workdir: PathBuf,
     completion_mode: CompletionMode,
+    verify_cmd: Option<String>,
     tick_interval: Duration,
     stall_timeout: Duration,
     pm_wake_interval: Duration,
@@ -78,6 +79,7 @@ impl Daemon {
             override_file: OverrideFile::new(override_path),
             workdir: config.daemon.workdir.clone(),
             completion_mode: config.daemon.completion_mode,
+            verify_cmd: config.daemon.verify_cmd.clone(),
             tick_interval: Duration::from_secs(config.daemon.tick_interval_secs),
             stall_timeout: Duration::from_secs(config.daemon.stall_timeout_secs),
             pm_wake_interval: Duration::from_secs(config.daemon.pm_wake_interval_mins * 60),
@@ -157,6 +159,7 @@ impl Daemon {
                 &self.workdir,
                 self.stall_timeout,
                 self.completion_mode,
+                self.verify_cmd.as_deref(),
             )
             .await?;
             println!("{} finished: {:?}", issue.id, run.phase);

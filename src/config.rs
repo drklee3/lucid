@@ -95,6 +95,15 @@ pub struct DaemonConfig {
     /// doesn't touch git, matching every behavior before this field existed.
     #[serde(default)]
     pub completion_mode: CompletionMode,
+    /// Repo-wide default for `ReviewMode::Agent`'s deterministic verify step (see
+    /// docs/wiki/architecture/worker-completion.md) — the common case is one
+    /// command that's true for every task in a repo (e.g. `cargo test`), same as
+    /// CI, so this is the primary way to set it. A `Proposal.verify_cmd` on a
+    /// specific task overrides this one, for the exception (a docs-only task, a
+    /// monorepo task scoped to one package) rather than the rule. `None` (the
+    /// default) leaves the review agent to infer its own command per task.
+    #[serde(default)]
+    pub verify_cmd: Option<String>,
 }
 
 impl Default for DaemonConfig {
@@ -105,6 +114,7 @@ impl Default for DaemonConfig {
             pm_wake_interval_mins: default_pm_wake_interval_mins(),
             workdir: default_workdir(),
             completion_mode: CompletionMode::default(),
+            verify_cmd: None,
         }
     }
 }
