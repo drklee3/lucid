@@ -102,15 +102,19 @@ pub enum DecisionState {
 /// labels below) — decision state moves the issue's actual `state` field, not a
 /// label, so it's visible in the board view and any of Linear's own state-based
 /// automations. See docs/wiki/architecture/tracker-adapter.md.
+///
+/// `Rejected`/`StaleClosed` have no entry here: those are terminal "stop showing
+/// me this" states, and Linear already has a mechanism built for exactly that —
+/// archiving (`issueArchive`) — rather than a workflow-state column that would
+/// just sit on the board cluttering it with declined proposals.
 #[must_use]
-pub fn decision_state_name(state: DecisionState) -> &'static str {
+pub fn decision_state_name(state: DecisionState) -> Option<&'static str> {
     match state {
-        DecisionState::Pending => "Pending",
-        DecisionState::Approved => "Approved",
-        DecisionState::Rejected => "Rejected",
-        DecisionState::StaleClosed => "Stale",
-        DecisionState::Done => "Done",
-        DecisionState::NeedsReview => "In Review",
+        DecisionState::Pending => Some("Pending"),
+        DecisionState::Approved => Some("Approved"),
+        DecisionState::Done => Some("Done"),
+        DecisionState::NeedsReview => Some("In Review"),
+        DecisionState::Rejected | DecisionState::StaleClosed => None,
     }
 }
 
@@ -119,8 +123,6 @@ pub fn decision_state_from_name(name: &str) -> Option<DecisionState> {
     match name {
         "Pending" => Some(DecisionState::Pending),
         "Approved" => Some(DecisionState::Approved),
-        "Rejected" => Some(DecisionState::Rejected),
-        "Stale" => Some(DecisionState::StaleClosed),
         "Done" => Some(DecisionState::Done),
         "In Review" => Some(DecisionState::NeedsReview),
         _ => None,

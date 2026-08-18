@@ -140,6 +140,53 @@ impl LinearAdapter {
                 )
             })
     }
+
+    /// Every archived issue in the team — the closest read-back Linear offers
+    /// for `Rejected`/`StaleClosed`, which share the archive mechanism instead
+    /// of a distinct workflow state. See `decision_state_name`.
+    async fn query_archived(&self) -> anyhow::Result<Vec<TrackerIssue>> {
+        const QUERY: &str = r"
+            query Archived($team: String!, $first: Int!, $after: String) {
+              issues(
+                filter: { team: { key: { eq: $team } } }
+                includeArchived: true
+                first: $first
+                after: $after
+              ) {
+                nodes { id title description state { name } archivedAt labels(first: 100) { nodes { id name } } }
+                pageInfo { hasNextPage endCursor }
+              }
+            }
+        ";
+
+        let mut collected = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let data: IssuesData = self
+                .graphql(
+                    QUERY,
+                    json!({ "team": self.team_key, "first": PAGE_SIZE, "after": cursor }),
+                )
+                .await?;
+
+            collected.extend(
+                data.issues
+                    .nodes
+                    .into_iter()
+                    .map(IssueNode::into_tracker_issue)
+                    .filter(|issue| issue.decision_state == Some(DecisionState::Rejected)),
+            );
+
+            if !data.issues.page_info.has_next_page {
+                break;
+            }
+            cursor = data.issues.page_info.end_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        Ok(collected)
+    }
 }
 
 #[async_trait]
@@ -154,7 +201,9 @@ impl TrackerAdapter for LinearAdapter {
             }
         ";
 
-        let pending_state_id = self.state_id(decision_state_name(DecisionState::Pending)).await?;
+        let pending_state_id = self
+            .state_id(decision_state_name(DecisionState::Pending).expect("Pending is always a real state"))
+            .await?;
         let review_label_id = self.label_id(review_label(proposal.review)).await?;
         let team = team_id(
             &self
@@ -188,25 +237,42 @@ impl TrackerAdapter for LinearAdapter {
     }
 
     async fn set_decision_state(&self, issue_id: &str, state: DecisionState) -> anyhow::Result<()> {
-        const MUTATION: &str = r"
+        const UPDATE: &str = r"
             mutation SetState($id: String!, $stateId: String!) {
               issueUpdate(id: $id, input: { stateId: $stateId }) { success }
             }
         ";
+        const ARCHIVE: &str = r"
+            mutation ArchiveIssue($id: String!) {
+              issueArchive(id: $id) { success }
+            }
+        ";
 
-        let state_id = self.state_id(decision_state_name(state)).await?;
+        // `Rejected`/`StaleClosed` archive rather than move to a state — see
+        // `decision_state_name`'s doc comment.
+        let Some(name) = decision_state_name(state) else {
+            let data: IssueArchiveData = self.graphql(ARCHIVE, json!({ "id": issue_id })).await?;
+            if !data.issue_archive.success {
+                bail!("linear issueArchive failed on {issue_id}");
+            }
+            return Ok(());
+        };
+
+        let state_id = self.state_id(name).await?;
         let data: IssueUpdateData = self
-            .graphql(MUTATION, json!({ "id": issue_id, "stateId": state_id }))
+            .graphql(UPDATE, json!({ "id": issue_id, "stateId": state_id }))
             .await?;
         if !data.issue_update.success {
-            bail!(
-                "linear issueUpdate failed setting state `{}` on {issue_id}",
-                decision_state_name(state)
-            );
+            bail!("linear issueUpdate failed setting state `{name}` on {issue_id}");
         }
         Ok(())
     }
 
+    /// `Rejected`/`StaleClosed` both archive rather than move to a distinct state
+    /// (see `decision_state_name`), so this can't tell them apart on read-back —
+    /// either query returns every archived issue in the team. Not a problem
+    /// today: nothing calls this with either variant (`Rejected` is set-only via
+    /// `lucid task reject`, `StaleClosed` isn't implemented yet).
     async fn query_by_decision_state(&self, state: DecisionState) -> anyhow::Result<Vec<TrackerIssue>> {
         const QUERY: &str = r"
             query ByState($state: String!, $team: String!, $first: Int!, $after: String) {
@@ -215,16 +281,19 @@ impl TrackerAdapter for LinearAdapter {
                 first: $first
                 after: $after
               ) {
-                nodes { id title description state { name } labels(first: 100) { nodes { id name } } }
+                nodes { id title description state { name } archivedAt labels(first: 100) { nodes { id name } } }
                 pageInfo { hasNextPage endCursor }
               }
             }
         ";
 
+        let Some(state_name) = decision_state_name(state) else {
+            return self.query_archived().await;
+        };
+
         // Callers use this for the rejected-state dedup check, where a truncated page
         // reads as "no match" and files a duplicate — see
         // docs/wiki/architecture/dedup-death-loop.md. Paginate fully.
-        let state_name = decision_state_name(state);
         let mut collected = Vec::new();
         let mut cursor: Option<String> = None;
         loop {
@@ -267,7 +336,7 @@ impl TrackerAdapter for LinearAdapter {
                 includeArchived: true
                 first: $first
               ) {
-                nodes { id title description state { name } labels(first: 100) { nodes { id name } } }
+                nodes { id title description state { name } archivedAt labels(first: 100) { nodes { id name } } }
               }
             }
         ";
@@ -360,15 +429,38 @@ struct IssueNode {
     description: Option<String>,
     #[serde(default)]
     state: Option<WorkflowStateName>,
+    #[serde(default, rename = "archivedAt")]
+    archived_at: Option<String>,
     labels: Nodes<LabelNode>,
 }
 
 impl IssueNode {
     fn into_tracker_issue(self) -> TrackerIssue {
-        let decision_state = self
+        // Archived issues (`Rejected`/`StaleClosed`, see `decision_state_name`)
+        // read back as `Rejected` — the two are indistinguishable from Linear's
+        // side; see `LinearAdapter::query_by_decision_state`'s doc comment.
+        //
+        // Archiving leaves the issue's prior state name untouched (Linear has no
+        // "cleared" state), so a `Pending` proposal that got rejected still shows
+        // `state.name == "Pending"` afterward. Only treat archive as incidental
+        // (i.e. trust the state name) when that name is one of the three
+        // positive/active outcomes lucid itself never archives *from* —
+        // `Approved`/`Done`/`In Review` — which means an archived issue in one of
+        // those states was very likely archived by a human tidying the board, not
+        // by `lucid task reject`.
+        let mapped_state = self
             .state
             .as_ref()
             .and_then(|s| decision_state_from_name(&s.name));
+        let decision_state = if self.archived_at.is_some()
+            && !matches!(
+                mapped_state,
+                Some(DecisionState::Approved | DecisionState::Done | DecisionState::NeedsReview)
+            ) {
+            Some(DecisionState::Rejected)
+        } else {
+            mapped_state
+        };
         let review = self
             .labels
             .nodes
@@ -454,6 +546,12 @@ struct IssueUpdateData {
 }
 
 #[derive(Deserialize)]
+struct IssueArchiveData {
+    #[serde(rename = "issueArchive")]
+    issue_archive: SuccessPayload,
+}
+
+#[derive(Deserialize)]
 struct CommentCreateData {
     #[serde(rename = "commentCreate")]
     comment_create: SuccessPayload,
@@ -515,19 +613,23 @@ mod tests {
     }
 
     #[test]
-    fn decision_state_names_round_trip() {
+    fn decision_state_names_round_trip_for_real_states() {
         for state in [
             DecisionState::Pending,
             DecisionState::Approved,
-            DecisionState::Rejected,
-            DecisionState::StaleClosed,
             DecisionState::Done,
             DecisionState::NeedsReview,
         ] {
-            let name = decision_state_name(state);
+            let name = decision_state_name(state).expect("real state");
             assert_eq!(decision_state_from_name(name), Some(state));
         }
         assert_eq!(decision_state_from_name("Triage"), None);
+    }
+
+    #[test]
+    fn rejected_and_stale_have_no_state_name() {
+        assert_eq!(decision_state_name(DecisionState::Rejected), None);
+        assert_eq!(decision_state_name(DecisionState::StaleClosed), None);
     }
 
     #[test]
