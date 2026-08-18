@@ -29,15 +29,15 @@ This is deliberately harness-agnostic: it works for any future harness added to 
 
 No new correlation ID needs to be invented or persisted anywhere new; this only requires threading two already-known values into an env var at the one place the harness subprocess is spawned.
 
-## Writing the link back: a proof-of-work artifact, not a dashboard feature
+## Writing the link back: a structured attachment, not comment text
 
-Per the [proof-of-work artifacts](observability.md#proof-of-work-artifacts) gap already noted, have the Worker post a trace-query link back to the tracker item via the tracker adapter (same mediation boundary as every other tracker write — see [harness/tracker isolation](harness-tracker-isolation.md), the harness itself never touches the tracker) on dispatch completion, e.g.:
+Per the [proof-of-work artifacts](observability.md#proof-of-work-artifacts) gap already noted, the Worker posts a trace-query link back to the tracker item via `TrackerAdapter::attach_link(issue_id, "Trace", url)` on dispatch completion, e.g.:
 
 ```
 http://localhost:6006/projects/{project_id}?filter=lucid.dispatch_id=='{dispatch_id}'
 ```
 
-Opening the ticket and clicking through to the exact span tree for that run replaces grep-ing terminal output or re-running the task to reproduce a failure.
+This goes through the same mediation boundary as every other tracker write — see [harness/tracker isolation](harness-tracker-isolation.md), the harness itself never touches the tracker — but as a distinct method from `attach_note`. `attach_link` posts a structured title+url attachment (Linear's real `attachmentCreate` mutation for `LinearAdapter`; a labeled entry appended to `notes` for `FileTracker`, which has no structured-attachment concept), not a line embedded in a plain-text note. The dispatch-status note posted alongside it no longer repeats the link as text — see [tracker adapter](tracker-adapter.md#structured-attachments-attach_link-vs-attach_note) for the trait-level distinction. Opening the ticket and clicking through to the exact span tree for that run replaces grep-ing terminal output or re-running the task to reproduce a failure.
 
 ## Local trace backend: OSS, single container, SQLite by default
 

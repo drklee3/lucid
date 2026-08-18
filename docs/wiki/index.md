@@ -7,7 +7,7 @@ An [LLM Wiki](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f)
 - [overview](architecture/overview.md) — system concept, core roles, key constraints, component diagram, the standalone-orchestrator correction
 - [tech-stack](architecture/tech-stack.md) — why Rust, crate choices
 - [presence-detection](architecture/presence-detection.md) — pluggable idle-source interface; verified `logind`-is-dead-on-WSL2 finding; append-only mode-transition audit log
-- [tracker-adapter](architecture/tracker-adapter.md) — Linear as today's swappable tracker backend
+- [tracker-adapter](architecture/tracker-adapter.md) — Linear as today's swappable tracker backend; `attach_link` structured attachments vs `attach_note` comments; `identifier`-driven GitHub PR magic-word linking
 - [agent-handoff](architecture/agent-handoff.md) — the frontmatter contract the Worker parses deterministically
 - [harness-dispatch](architecture/harness-dispatch.md) — the (harness, auth-mode) profile list, subscription-first
 - [harness-tracker-isolation](architecture/harness-tracker-isolation.md) — no dispatched harness ever gets a live tracker credential
@@ -19,7 +19,7 @@ An [LLM Wiki](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f)
 - [review-rework-ux](architecture/review-rework-ux.md) — the undecided auto-resume-vs-explicit-trigger fork
 - [observability](architecture/observability.md) — mobile/notification UX, the deferred-dashboard decision, CLI-first v1
 - [error-stall-visibility](architecture/error-stall-visibility.md) — the most consistent gap across every system surveyed
-- [trace-correlation](architecture/trace-correlation.md) — tagging harness dispatches with OTel resource attributes so tracker items link straight to their trace
+- [trace-correlation](architecture/trace-correlation.md) — tagging harness dispatches with OTel resource attributes so tracker items link straight to their trace, posted as a structured `attach_link` attachment
 - [worker-completion](architecture/worker-completion.md) — per-issue git worktree isolation + `gh`-driven PR completion, `ReviewMode` (auto/human/agent) deciding who merges, and the presence-independent tick step that reconciles `NeedsReview` against the PR's own merge status
 - [human-in-the-loop](architecture/human-in-the-loop.md) — ticket ingestion via the tracker itself, a pluggable `NotificationSink`, and the end-of-turn signal + session-resume design for mid-task questions that never blocks a process
 - [ci-quality-tooling](architecture/ci-quality-tooling.md) — cargo-deny over cargo-audit, SHA-pinned actions, zizmor annotations over SARIF, weekly-only cargo-mutants
