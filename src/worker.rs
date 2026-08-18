@@ -55,9 +55,10 @@ pub fn dispatch_prompt(issue: &TrackerIssue, completion_mode: CompletionMode) ->
         let _ = write!(
             prompt,
             "\n\n---\n\nWhen you're done and confident any acceptance criteria above are \
-             met, commit your changes yourself with `git commit` — include `{}` in the \
-             commit message. Do not push, and do not open a pull request. If there's \
-             nothing worth committing, leave the working tree as it is.",
+             met, commit your changes yourself with `git commit` — one commit or several, \
+             whatever's logically right for the change; include `{}` in at least one commit \
+             message. Do not push, and do not open a pull request. If there's nothing worth \
+             committing, leave the working tree as it is.",
             issue.id
         );
     }
@@ -113,18 +114,45 @@ async fn git_dirty_file_count(workdir: &Path) -> Option<usize> {
     })
 }
 
+/// One-line `git log --oneline <before>..HEAD` entries — every commit the dispatch
+/// made, not just whether `HEAD` moved. A harness is expected to make however many
+/// commits are logically right for the change (see `dispatch_prompt`'s instruction),
+/// not just one — comparing a single before/after SHA would silently drop all but
+/// the last.
+async fn commits_since(workdir: &Path, before: &str) -> Option<Vec<String>> {
+    let output = tokio::process::Command::new("git")
+        .args(["log", "--oneline", &format!("{before}..HEAD")])
+        .current_dir(workdir)
+        .output()
+        .await
+        .ok()?;
+    output.status.success().then(|| {
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(str::to_string)
+            .collect()
+    })
+}
+
 /// Describes what happened to the working tree under `CompletionMode::Commit`, by
-/// observing `HEAD` before/after the dispatch — lucid never runs a git-mutating
+/// listing commits made since dispatch started — lucid never runs a git-mutating
 /// command itself here (see `CompletionMode::Commit`'s doc comment for why).
 async fn describe_commit_result(workdir: &Path, head_before: Option<&str>) -> String {
-    let head_after = git_head(workdir).await;
-    match (head_before, head_after.as_deref()) {
-        (Some(before), Some(after)) if before != after => {
-            format!("Committed `{}`.", &after[..after.len().min(12)])
+    let Some(before) = head_before else {
+        return "Commit status unknown (not a git repository, or `git` isn't available)."
+            .to_string();
+    };
+    match commits_since(workdir, before).await {
+        Some(commits) if !commits.is_empty() => {
+            use std::fmt::Write;
+            let mut out = format!("{} commit(s):", commits.len());
+            for c in &commits {
+                let _ = write!(out, "\n  - {c}");
+            }
+            out
         }
-        (None, None) => "Commit status unknown (not a git repository, or `git` isn't available)."
-            .to_string(),
-        _ => match git_dirty_file_count(workdir).await {
+        Some(_) => match git_dirty_file_count(workdir).await {
             Some(0) => "No changes.".to_string(),
             Some(n) => format!(
                 "Left {n} file(s) uncommitted — lucid doesn't auto-commit (see CompletionMode::Commit)."
@@ -132,6 +160,8 @@ async fn describe_commit_result(workdir: &Path, head_before: Option<&str>) -> St
             None => "Commit status unknown (not a git repository, or `git` isn't available)."
                 .to_string(),
         },
+        None => "Commit status unknown (not a git repository, or `git` isn't available)."
+            .to_string(),
     }
 }
 
@@ -631,7 +661,62 @@ mod tests {
 
         assert_eq!(run.phase, WorkerPhase::Succeeded);
         let notes = tracker.notes.lock().unwrap();
-        assert!(notes[0].1.contains("Committed `"));
+        assert!(notes[0].1.contains("1 commit(s):"));
+        assert!(notes[0].1.contains("done"));
+
+        let _ = std::fs::remove_dir_all(&workdir);
+    }
+
+    #[tokio::test]
+    async fn commit_mode_reports_every_commit_not_just_the_last() {
+        let workdir = std::env::temp_dir().join(format!("lucid-multi-commit-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&workdir).unwrap();
+        let run_git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&workdir)
+                .output()
+                .unwrap()
+        };
+        run_git(&["init", "-q"]);
+        run_git(&["config", "user.email", "test@example.com"]);
+        run_git(&["config", "user.name", "test"]);
+        std::fs::write(workdir.join("a.txt"), "one").unwrap();
+        run_git(&["add", "."]);
+        run_git(&["commit", "-q", "-m", "init"]);
+
+        let tracker = MockTracker::default();
+        let profiles = [HarnessProfile {
+            name: "fake-claude".into(),
+            kind: HarnessKind::ClaudeCode,
+            cmd: "sh".into(),
+            args: vec![
+                "-c".into(),
+                "echo two >> a.txt && git commit -q -am first && echo three >> a.txt && git commit -q -am second"
+                    .into(),
+            ],
+            auth_mode: AuthMode::Subscription,
+            priority: 1,
+        }];
+
+        let run = run_dispatch(
+            &tracker,
+            "ENG-9",
+            "do the thing",
+            &profiles,
+            &observability(),
+            &workdir,
+            Duration::from_secs(5),
+            CompletionMode::Commit,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(run.phase, WorkerPhase::Succeeded);
+        let notes = tracker.notes.lock().unwrap();
+        assert!(notes[0].1.contains("2 commit(s):"));
+        assert!(notes[0].1.contains("first"));
+        assert!(notes[0].1.contains("second"));
 
         let _ = std::fs::remove_dir_all(&workdir);
     }
