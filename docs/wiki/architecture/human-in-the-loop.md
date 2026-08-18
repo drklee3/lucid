@@ -27,7 +27,11 @@ Each call site already exists and already knows exactly what it needs to say —
 
 The actual, concrete gap today: `worker::dispatch_prompt` builds its prompt from `issue.description` only (`src/worker.rs`) — and `TrackerAdapter` has no method to read comments back at all, only `attach_note` to write them. So if a human adds clarifying info as a Linear *comment* while reviewing a `Pending` proposal — the natural, low-friction way to do it, not hand-editing the frontmatter description — the Worker never sees it. An edited `description` field would actually work today (the issue is re-fetched fresh right before dispatch, not read once at filing time), but nobody clarifies a ticket by rewriting its structured body.
 
-Fix: `TrackerAdapter` gains a read method (`list_comments` or similar), and `dispatch_prompt` folds any comments posted since the proposal was filed into the prompt, appended after the description. No new `DecisionState`, no new `WorkerPhase`, no worktree lifecycle change, no session to manage — the existing `Pending`/`Approved` gate already does the waiting, for free. This is also where a PM proposal that's unsure of its own scope should say so explicitly (a future `confidence`/`needs_scoping` field on `Proposal`, `docs/FEATURES.md`'s already-flagged "Confidence score returned alongside findings") — but that's an enhancement to *what* gets asked, not a prerequisite for reading the answer.
+Fix: `TrackerAdapter` gains a read method (`list_comments` or similar), and `dispatch_prompt` folds the issue's **full current comment thread** into the prompt, appended after the description — not a delta since filing, just always fetch and include everything, the same way title/description are already re-fetched fresh right before dispatch rather than read once at filing time. Linear is genuinely the user-facing surface here; there's no reason to track "what's new" when the whole thread is cheap to pull every time.
+
+That thread will also contain lucid's own automated notes (`attach_note`'s dispatch-status/PR-link/verify-failure messages, posted to the same comment stream) mixed in with human comments — include them rather than filtering them out. A Worker that can see "here's what happened last attempt" alongside "here's what the human said" has strictly more context, and which is which is almost always obvious from content; filtering adds real complexity (tagging or pattern-matching lucid's own notes) for marginal benefit.
+
+No new `DecisionState`, no new `WorkerPhase`, no worktree lifecycle change, no session to manage — the existing `Pending`/`Approved` gate already does the waiting, for free. This is also where a PM proposal that's unsure of its own scope should say so explicitly (a future `confidence`/`needs_scoping` field on `Proposal`, `docs/FEATURES.md`'s already-flagged "Confidence score returned alongside findings") — but that's an enhancement to *what* gets asked, not a prerequisite for reading the answer.
 
 ## The rare case: a Worker discovers something mid-task (end-of-turn signal, never a live pause)
 
@@ -64,7 +68,7 @@ Not a free fix, though: `--bare` also skips the project's own `CLAUDE.md` — wh
 
 Each piece below is independently shippable:
 
-1. **Approval-time clarification** — `TrackerAdapter::list_comments` + fold into `dispatch_prompt`. Smallest, highest value, covers the common case, no state-machine changes.
+1. **Approval-time clarification** — `TrackerAdapter::list_comments` (full thread, every dispatch) + fold into `dispatch_prompt`. Smallest, highest value, covers the common case, no state-machine changes.
 2. `--bare` + explicit `CLAUDE.md` injection for all dispatches (Worker, PM, Reviewer) — no design risk, matches documented current best practice.
 3. `NotificationSink` trait + `NullSink` default + `WebhookSink` (templated) — additive, zero behavior change until configured.
 4. `NEEDS_INPUT:` marker parsing + `AwaitingHumanInput` producer + worktree-keep-alive exception + `on_awaiting_input` hook — the rare-case mechanism, lowest priority of the five.
