@@ -1,6 +1,8 @@
-# Human-in-the-Loop: Ingestion, Notification, and Mid-Task Input
+# Human-in-the-Loop: Ingestion, Notification, and Scoping Input
 
-Design for three things asked together, because they're one workflow: file tickets from anywhere, get notified when lucid needs a decision, and let an in-flight Worker ask a scoping question without ever blocking a process on the answer. Resolves three previously-open gaps: [state-machine-gaps](state-machine-gaps.md)'s missing `AwaitingHumanInput` producer, `docs/FEATURES.md`'s unbuilt lifecycle hooks, and [symphony-patterns](symphony-patterns.md)'s "continuation turns, not context resets" requirement.
+Design for three things asked together, because they're one workflow: file tickets from anywhere, get notified when lucid needs a decision, and let a human clarify an ambiguous task before (usually) or during (rarely) a Worker acts on it. Resolves three previously-open gaps: [state-machine-gaps](state-machine-gaps.md)'s missing `AwaitingHumanInput` producer, `docs/FEATURES.md`'s unbuilt lifecycle hooks, and [symphony-patterns](symphony-patterns.md)'s "continuation turns, not context resets" requirement.
+
+**Scoping input has two cases with very different costs, and they were originally conflated here.** `Pending → Approved` is already a mandatory human gate — nothing dispatches without a human looking at it first — so the common case ("this proposal is ambiguous, let me clarify before approving") needs *zero* new state machine: there's no running session yet, nothing to pause or resume, just a comment a human adds before approving. The rare case (a Worker discovers something genuinely unknowable at approval time, mid-execution) is the one that actually needs the pause/resume machinery below, and it's real but secondary — most scoping questions are answerable from reading the ticket, which is exactly what approval-time review already does.
 
 ## Ticket ingestion: no new lucid code
 
@@ -21,7 +23,13 @@ pub trait NotificationSink: Send + Sync {
 
 Each call site already exists and already knows exactly what it needs to say — `worker::finalize_completion`'s `NeedsHuman` branch, the new needs-input branch (below), and `mark_done`'s success path. A no-op `NullSink` is the default (matches today's behavior exactly); a `WebhookSink` (templated: `{issue_title}`, `{issue_url}`, `{pr_url}`, `{question}` interpolated into a user-configured message template, POSTed to any URL) is the first real implementation — covers Discord, Slack, or anything else that takes a webhook, without lucid knowing anything Discord-specific. `lucid.toml` gets one new optional `[notifications]` section: a template string per event and a webhook URL. No hardcoded Discord dependency in the binary at all.
 
-## The needs-input mechanism: end-of-turn signal, never a live pause
+## The common case: approval-time clarification (build this first)
+
+The actual, concrete gap today: `worker::dispatch_prompt` builds its prompt from `issue.description` only (`src/worker.rs`) — and `TrackerAdapter` has no method to read comments back at all, only `attach_note` to write them. So if a human adds clarifying info as a Linear *comment* while reviewing a `Pending` proposal — the natural, low-friction way to do it, not hand-editing the frontmatter description — the Worker never sees it. An edited `description` field would actually work today (the issue is re-fetched fresh right before dispatch, not read once at filing time), but nobody clarifies a ticket by rewriting its structured body.
+
+Fix: `TrackerAdapter` gains a read method (`list_comments` or similar), and `dispatch_prompt` folds any comments posted since the proposal was filed into the prompt, appended after the description. No new `DecisionState`, no new `WorkerPhase`, no worktree lifecycle change, no session to manage — the existing `Pending`/`Approved` gate already does the waiting, for free. This is also where a PM proposal that's unsure of its own scope should say so explicitly (a future `confidence`/`needs_scoping` field on `Proposal`, `docs/FEATURES.md`'s already-flagged "Confidence score returned alongside findings") — but that's an enhancement to *what* gets asked, not a prerequisite for reading the answer.
+
+## The rare case: a Worker discovers something mid-task (end-of-turn signal, never a live pause)
 
 Confirmed directly against current Claude Code docs (`research-first` pass, 2026-08-18): there is no headless "ask and wait" primitive. `AskUserQuestion` is explicitly denied outside interactive/`dontAsk`-exempt modes, and a `-p` session that needs input has exactly one option — end its turn and exit. This is a hard constraint, not a missing feature to work around differently: **the mechanism cannot be a blocking wait inside a running process**, because `-p` doesn't support one and `daemon.stall_timeout_secs` would kill it anyway (correctly — a process blocked for hours would be indistinguishable from a hung one).
 
@@ -56,10 +64,11 @@ Not a free fix, though: `--bare` also skips the project's own `CLAUDE.md` — wh
 
 Each piece below is independently shippable:
 
-1. `--bare` + explicit `CLAUDE.md` injection for all dispatches (Worker, PM, Reviewer) — smallest, no design risk, matches documented current best practice.
-2. `NotificationSink` trait + `NullSink` default + `WebhookSink` (templated) — additive, zero behavior change until configured.
-3. `NEEDS_INPUT:` marker parsing + `AwaitingHumanInput` producer + worktree-keep-alive exception + `on_awaiting_input` hook.
-4. Resume-on-reapproval: check `DaemonState.runs` for a stored `session_id` before building a fresh prompt; dispatch via `--resume` when present.
-5. Staleness timeout for parked `AwaitingHumanInput` issues, alongside the existing `reconcile_needs_review` tick step.
+1. **Approval-time clarification** — `TrackerAdapter::list_comments` + fold into `dispatch_prompt`. Smallest, highest value, covers the common case, no state-machine changes.
+2. `--bare` + explicit `CLAUDE.md` injection for all dispatches (Worker, PM, Reviewer) — no design risk, matches documented current best practice.
+3. `NotificationSink` trait + `NullSink` default + `WebhookSink` (templated) — additive, zero behavior change until configured.
+4. `NEEDS_INPUT:` marker parsing + `AwaitingHumanInput` producer + worktree-keep-alive exception + `on_awaiting_input` hook — the rare-case mechanism, lowest priority of the five.
+5. Resume-on-reapproval: check `DaemonState.runs` for a stored `session_id` before building a fresh prompt; dispatch via `--resume` when present.
+6. Staleness timeout for parked `AwaitingHumanInput` issues, alongside the existing `reconcile_needs_review` tick step.
 
-(4) depends on (3); everything else is independent and can land in any order.
+(5) depends on (4); everything else is independent and can land in any order.
