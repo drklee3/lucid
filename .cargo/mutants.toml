@@ -1,0 +1,6 @@
+# See https://mutants.rs/config-file.html.
+#
+# src/main.rs is thin CLI-argument dispatch (see its own doc comment) with no
+# unit tests of its own — mutating it just times out against a live daemon
+# rather than surfacing anything a unit test could catch.
+exclude_globs = ["src/main.rs"]

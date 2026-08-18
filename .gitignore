@@ -1,4 +1,5 @@
 /target
+/mutants.out*
 
 # local runtime state (sqlite db, mode file, logs) — not part of the repo
 /state/
