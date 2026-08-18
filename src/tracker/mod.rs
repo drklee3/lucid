@@ -142,6 +142,11 @@ pub struct TrackerIssue {
     /// matches today's behavior (a successful dispatch just... finishes) for
     /// every issue created before this field existed.
     pub review: ReviewMode,
+    /// Linear's human-readable identifier (e.g. `"SUSHI-72"`), distinct from `id`
+    /// (the internal UUID) — GitHub magic words (`Fixes SUSHI-72`) need this form
+    /// to trigger Linear's native PR-linking integration. `None` for `FileTracker`,
+    /// which has no separate human-readable form.
+    pub identifier: Option<String>,
 }
 
 #[async_trait::async_trait]
@@ -170,6 +175,12 @@ pub trait TrackerAdapter: Send + Sync {
     /// docs/wiki/architecture/trace-correlation.md). Never used to change decision
     /// state; that stays `set_decision_state`'s job.
     async fn attach_note(&self, issue_id: &str, body: &str) -> anyhow::Result<()>;
+
+    /// Posts a structured attachment (title + url) onto an existing issue — e.g.
+    /// the `OTel` trace link a dispatch produces. Distinct from `attach_note`: a
+    /// note is plain-text discussion/narration, an attachment is a persistent
+    /// external-resource link.
+    async fn attach_link(&self, issue_id: &str, title: &str, url: &str) -> anyhow::Result<()>;
 
     /// The issue's full comment thread, oldest first, each entry rendered with its
     /// author (e.g. `"tzushi: clarify to only touch src/foo.rs"`) — the read-back

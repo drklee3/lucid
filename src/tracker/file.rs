@@ -67,6 +67,7 @@ impl FileTracker {
             description: issue.description.clone(),
             decision_state: issue.decision_state,
             review: issue.review,
+            identifier: None,
         }
     }
 }
@@ -139,6 +140,14 @@ impl TrackerAdapter for FileTracker {
             });
         }
         self.persist(&issues)
+    }
+
+    /// No structured-attachment concept in the local store — appended to `notes`
+    /// as a clearly-labeled entry instead, since this is a local stand-in backend,
+    /// not the real target of the feature.
+    async fn attach_link(&self, issue_id: &str, title: &str, url: &str) -> anyhow::Result<()> {
+        self.attach_note(issue_id, &format!("[attachment] {title}: {url}"))
+            .await
     }
 
     async fn list_comments(&self, issue_id: &str) -> anyhow::Result<Vec<String>> {
