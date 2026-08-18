@@ -463,6 +463,13 @@ impl TrackerAdapter for LinearAdapter {
                 break;
             }
         }
+        // Linear returns comments newest-first regardless of the `orderBy` field
+        // named above (confirmed live: `orderBy: createdAt` alone doesn't imply
+        // ascending) — reverse once, after collecting every page, rather than
+        // depend on API ordering semantics that don't behave as the field name
+        // suggests. `dispatch_prompt`'s `## Comments` section needs oldest-first
+        // to read as a natural conversation history.
+        collected.reverse();
         Ok(collected)
     }
 }
