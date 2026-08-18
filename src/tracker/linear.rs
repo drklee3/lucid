@@ -190,7 +190,7 @@ impl LinearAdapter {
                 first: $first
                 after: $after
               ) {
-                nodes { id title description state { name } archivedAt labels(first: 100) { nodes { id name } } }
+                nodes { id identifier title description state { name } archivedAt labels(first: 100) { nodes { id name } } }
                 pageInfo { hasNextPage endCursor }
               }
             }
@@ -327,7 +327,7 @@ impl TrackerAdapter for LinearAdapter {
                 first: $first
                 after: $after
               ) {
-                nodes { id title description state { name } archivedAt labels(first: 100) { nodes { id name } } }
+                nodes { id identifier title description state { name } archivedAt labels(first: 100) { nodes { id name } } }
                 pageInfo { hasNextPage endCursor }
               }
             }
@@ -384,7 +384,7 @@ impl TrackerAdapter for LinearAdapter {
                 includeArchived: true
                 first: $first
               ) {
-                nodes { id title description state { name } archivedAt labels(first: 100) { nodes { id name } } }
+                nodes { id identifier title description state { name } archivedAt labels(first: 100) { nodes { id name } } }
               }
             }
         ";
@@ -422,6 +422,25 @@ impl TrackerAdapter for LinearAdapter {
             .await?;
         if !data.comment_create.success {
             bail!("linear commentCreate failed on {issue_id}");
+        }
+        Ok(())
+    }
+
+    async fn attach_link(&self, issue_id: &str, title: &str, url: &str) -> anyhow::Result<()> {
+        const MUTATION: &str = r"
+            mutation AttachLink($input: AttachmentCreateInput!) {
+              attachmentCreate(input: $input) { success }
+            }
+        ";
+
+        let data: AttachmentCreateData = self
+            .graphql(
+                MUTATION,
+                json!({ "input": { "issueId": issue_id, "title": title, "url": url } }),
+            )
+            .await?;
+        if !data.attachment_create.success {
+            bail!("linear attachmentCreate failed on {issue_id}");
         }
         Ok(())
     }
@@ -518,6 +537,8 @@ struct WorkflowStateName {
 #[derive(Deserialize)]
 struct IssueNode {
     id: String,
+    #[serde(default)]
+    identifier: Option<String>,
     title: String,
     #[serde(default)]
     description: Option<String>,
@@ -569,6 +590,7 @@ impl IssueNode {
             description: self.description.filter(|d| !d.is_empty()),
             decision_state,
             review,
+            identifier: self.identifier,
         }
     }
 }
@@ -654,6 +676,12 @@ struct IssueArchiveData {
 struct CommentCreateData {
     #[serde(rename = "commentCreate")]
     comment_create: SuccessPayload,
+}
+
+#[derive(Deserialize)]
+struct AttachmentCreateData {
+    #[serde(rename = "attachmentCreate")]
+    attachment_create: SuccessPayload,
 }
 
 #[derive(Deserialize)]

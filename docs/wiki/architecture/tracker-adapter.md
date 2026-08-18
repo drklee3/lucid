@@ -34,6 +34,18 @@ Archiving doesn't clear or touch the issue's prior `state` field — a `Pending`
 - **An archived issue whose prior state was `Approved`/`Done`/`In Review` is treated as *not* rejected** — those three are outcomes lucid never archives *from* (only `Pending`, and in principle a not-yet-approved state, go through `lucid task reject`), so an archived issue sitting in one of them is read as "a human tidied up the board after the fact," not as a lucid rejection. This is a heuristic, not a guarantee — a future `lucid task reject` call against an already-approved issue would misclassify on read-back.
 - **`query_by_decision_state(Rejected)` has no way to scope to lucid-managed issues only.** It queries every archived issue in the team and keeps the ones that read as `Rejected` by the heuristic above — including issues archived by a human for reasons that have nothing to do with lucid at all, from long before lucid was ever wired up to the team. Confirmed live: a query against a real team surfaced an unrelated, years-old archived ticket alongside a genuine `lucid task reject` result. Fine for today's only consumer (`lucid task list --state rejected`, a human-facing convenience view), not something to build automated logic on without narrowing it first (e.g. a `lucid`-authored marker in the issue, once one exists).
 
+## Structured attachments: `attach_link` vs `attach_note`
+
+`TrackerAdapter::attach_link(issue_id, title, url)` posts a structured title+url attachment, distinct from `attach_note`'s plain-text comment. `LinearAdapter::attach_link` calls Linear's real `attachmentCreate` GraphQL mutation, so the link shows up as a rich attachment in Linear's UI rather than a line buried in a note's body. `FileTracker::attach_link` has no structured-attachment concept to map onto — it appends a `[attachment] {title}: {url}` entry to the same `notes` field `attach_note` uses, since `FileTracker` is a local stand-in backend, not the real target of this feature.
+
+The Worker uses this for the OTel trace link posted at dispatch completion — see [trace correlation](trace-correlation.md#writing-the-link-back-a-structured-attachment-not-comment-text). The dispatch-status note posted alongside it no longer repeats the link as text now that it's a structured attachment.
+
+## PR linking: a GitHub magic word, not a lucid-created attachment
+
+`TrackerIssue` carries an `identifier: Option<String>` — Linear's human-readable ID (e.g. `SUSHI-72`), distinct from `id` (the internal UUID). `LinearAdapter` populates it from the `identifier` field on every issue-fetching GraphQL query (`query_by_decision_state`, `query_similar`, the archived-issues query); it's always `None` for `FileTracker`, which has no separate human-readable form.
+
+`worker::open_pr`'s PR body leads with `Fixes <reference>` (the `pr_body` helper in `src/worker.rs`), using `issue.identifier` when present and falling back to the raw `issue.id` otherwise. Linear's installed GitHub integration recognizes this magic word and auto-links the PR as a rich attachment (diffs, checks, review sync) on its own — lucid does **not** call `attachmentCreate` for the PR link itself; only `attach_link`'s trace-link use (above) is a lucid-created attachment. This is why `identifier` needed to exist at all: `Fixes <internal-uuid>` wouldn't mean anything to Linear's integration, which matches on the team's short key + number form.
+
 ## No direct write access for dispatched harnesses
 
 See [harness/tracker isolation](harness-tracker-isolation.md) — the orchestrator is the sole chokepoint for every tracker read and write. No coding harness (Claude Code, Codex, Hermes) ever holds a live Linear credential.

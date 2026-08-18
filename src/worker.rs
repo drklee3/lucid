@@ -227,11 +227,12 @@ pub async fn run_dispatch(
                 WorkerPhase::Failed
             };
             let link = trace_link(observability, &o.dispatch_id);
+            tracker.attach_link(issue_id, "Trace", &link).await?;
             let status_desc = o
                 .status
                 .map_or_else(|| "unknown".to_string(), |s| s.to_string());
             let mut note = format!(
-                "Dispatch `{}` via `{}` — status: {status_desc}\nTrace: {link}",
+                "Dispatch `{}` via `{}` — status: {status_desc}",
                 o.dispatch_id, o.profile_name
             );
             let commit_status = describe_commit_result(workdir, head_before.as_deref()).await;
@@ -398,9 +399,13 @@ async fn dispatch_and_review_in_worktree(
     Ok((run, Some(verdict), pr_outcome))
 }
 
-/// Pushes `wt.branch` and opens its PR — the title is the issue title, the body
-/// links back to the tracker item so a human clicking through from GitHub has
-/// context without needing to already have the ticket open.
+/// Pushes `wt.branch` and opens its PR — the body leads with a GitHub magic word
+/// (`Fixes <identifier>`) referencing the issue's human-readable Linear identifier
+/// when known, falling back to the raw `id` for `FileTracker`/hand-filed issues.
+/// Linear's installed GitHub integration recognizes the magic word and auto-links
+/// the PR as a rich attachment on its own — lucid does not call `attachmentCreate`
+/// for this; see the `TrackerAdapter::attach_link` doc comment for the one link
+/// lucid does create itself (the trace link).
 async fn open_pr(
     repo_root: &Path,
     wt: &worktree::WorktreeHandle,
@@ -408,8 +413,23 @@ async fn open_pr(
     issue: &TrackerIssue,
 ) -> anyhow::Result<PullRequest> {
     pr::push_branch(&wt.path, &wt.branch).await?;
-    let body = format!("Dispatched by lucid for tracker item `{}`.", issue.id);
+    let body = pr_body(issue);
     pr::create(repo_root, &wt.branch, base_branch, &issue.title, &body).await
+}
+
+/// Builds `open_pr`'s PR body, leading with a GitHub magic word (`Fixes
+/// <reference>`) so Linear's installed GitHub integration auto-links the PR as a
+/// rich attachment once it recognizes the reference — `issue.identifier` when
+/// known (Linear's human-readable form, e.g. `SUSHI-72`), falling back to
+/// `issue.id` for `FileTracker`/hand-filed issues that have no separate
+/// human-readable identifier.
+#[must_use]
+fn pr_body(issue: &TrackerIssue) -> String {
+    let reference = issue.identifier.as_deref().unwrap_or(&issue.id);
+    format!(
+        "Fixes {reference}\n\nDispatched by lucid for tracker item `{}`.",
+        issue.id
+    )
 }
 
 /// A second, read-only dispatch that reviews a `ReviewMode::Agent` issue's pending
@@ -679,6 +699,7 @@ mod tests {
     struct MockTracker {
         notes: Mutex<Vec<(String, String)>>,
         decisions: Mutex<Vec<(String, DecisionState)>>,
+        links: Mutex<Vec<(String, String, String)>>,
     }
 
     #[async_trait]
@@ -713,6 +734,14 @@ mod tests {
                 .push((issue_id.to_string(), body.to_string()));
             Ok(())
         }
+        async fn attach_link(&self, issue_id: &str, title: &str, url: &str) -> anyhow::Result<()> {
+            self.links.lock().unwrap().push((
+                issue_id.to_string(),
+                title.to_string(),
+                url.to_string(),
+            ));
+            Ok(())
+        }
         async fn list_comments(&self, _issue_id: &str) -> anyhow::Result<Vec<String>> {
             Ok(Vec::new())
         }
@@ -735,6 +764,7 @@ mod tests {
             description: Some("---\ntask_type: \"bug: fix\"\n---\n\nIdleHint never resets.".into()),
             decision_state: None,
             review: crate::tracker::ReviewMode::Auto,
+            identifier: None,
         };
         let prompt = dispatch_prompt(&issue, &[]);
         assert!(prompt.starts_with("# Fix presence detection\n\n"));
@@ -749,6 +779,7 @@ mod tests {
             description: None,
             decision_state: None,
             review: crate::tracker::ReviewMode::Auto,
+            identifier: None,
         };
         let prompt = dispatch_prompt(&issue, &[]);
         assert!(prompt.starts_with("Hand-filed issue"));
@@ -766,6 +797,7 @@ mod tests {
             description: Some("do the thing".into()),
             decision_state: None,
             review: crate::tracker::ReviewMode::Auto,
+            identifier: None,
         };
         let comments = vec![
             "tzushi: clarify to only touch src/foo.rs".to_string(),
@@ -785,6 +817,7 @@ mod tests {
             description: Some("do the thing".into()),
             decision_state: None,
             review: crate::tracker::ReviewMode::Auto,
+            identifier: None,
         };
         let prompt = dispatch_prompt(&issue, &[]);
         assert!(!prompt.contains("## Comments"));
@@ -797,6 +830,35 @@ mod tests {
             link,
             "http://localhost:6006/projects/default?filter=lucid.dispatch_id=='abc-123'"
         );
+    }
+
+    #[test]
+    fn pr_body_uses_the_identifier_as_the_magic_word_reference_when_present() {
+        let issue = TrackerIssue {
+            id: "internal-uuid".into(),
+            title: "t".into(),
+            description: None,
+            decision_state: None,
+            review: ReviewMode::Auto,
+            identifier: Some("SUSHI-72".into()),
+        };
+        let body = pr_body(&issue);
+        assert!(body.starts_with("Fixes SUSHI-72\n"));
+        assert!(body.contains("internal-uuid"));
+    }
+
+    #[test]
+    fn pr_body_falls_back_to_the_raw_id_when_identifier_is_absent() {
+        let issue = TrackerIssue {
+            id: "LOCAL-1".into(),
+            title: "t".into(),
+            description: None,
+            decision_state: None,
+            review: ReviewMode::Auto,
+            identifier: None,
+        };
+        let body = pr_body(&issue);
+        assert!(body.starts_with("Fixes LOCAL-1\n"));
     }
 
     #[tokio::test]
@@ -830,8 +892,14 @@ mod tests {
         let notes = tracker.notes.lock().unwrap();
         assert_eq!(notes.len(), 1);
         assert_eq!(notes[0].0, "ENG-1");
-        assert!(notes[0].1.contains("Trace: http://localhost:6006"));
-        assert!(notes[0].1.contains(run.dispatch_id.as_ref().unwrap()));
+        assert!(!notes[0].1.contains("Trace:"));
+
+        let links = tracker.links.lock().unwrap();
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].0, "ENG-1");
+        assert_eq!(links[0].1, "Trace");
+        assert!(links[0].2.starts_with("http://localhost:6006"));
+        assert!(links[0].2.contains(run.dispatch_id.as_ref().unwrap()));
     }
 
     #[tokio::test]
@@ -861,7 +929,8 @@ mod tests {
         assert_eq!(run.phase, WorkerPhase::Failed);
         let notes = tracker.notes.lock().unwrap();
         assert_eq!(notes.len(), 1);
-        assert!(notes[0].1.contains("Trace:"));
+        assert!(!notes[0].1.contains("Trace:"));
+        assert_eq!(tracker.links.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]
@@ -1005,6 +1074,7 @@ mod tests {
             description: None,
             decision_state: Some(DecisionState::Approved),
             review: ReviewMode::Auto,
+            identifier: None,
         };
         let verdict = decide_review(
             &tracker,
@@ -1029,6 +1099,7 @@ mod tests {
             description: None,
             decision_state: Some(DecisionState::Approved),
             review: ReviewMode::Human,
+            identifier: None,
         };
         let verdict = decide_review(
             &tracker,
@@ -1164,6 +1235,7 @@ mod tests {
             description: description.map(str::to_string),
             decision_state: Some(DecisionState::Approved),
             review: ReviewMode::Agent,
+            identifier: None,
         }
     }
 
@@ -1200,6 +1272,7 @@ mod tests {
             description: Some("---\nverify_cmd: \"false\"\n---\n\nbody".into()),
             decision_state: Some(DecisionState::Approved),
             review: ReviewMode::Agent,
+            identifier: None,
         };
         // Empty profiles: if verify_cmd's failure didn't short-circuit before the
         // LLM review dispatch, agent_review would hit DispatchError::NoProfiles and
@@ -1232,6 +1305,7 @@ mod tests {
             description: Some("---\nverify_cmd: \"true\"\n---\n\nbody".into()),
             decision_state: Some(DecisionState::Approved),
             review: ReviewMode::Agent,
+            identifier: None,
         };
         let event = serde_json::json!({
             "type": "result",

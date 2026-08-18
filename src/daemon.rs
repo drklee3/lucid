@@ -364,6 +364,14 @@ mod tests {
                 .push((issue_id.to_string(), body.to_string()));
             Ok(())
         }
+        async fn attach_link(
+            &self,
+            _issue_id: &str,
+            _title: &str,
+            _url: &str,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
         async fn list_comments(&self, _issue_id: &str) -> anyhow::Result<Vec<String>> {
             Ok(Vec::new())
         }
@@ -376,6 +384,7 @@ mod tests {
             description: None,
             decision_state: Some(DecisionState::NeedsReview),
             review: ReviewMode::Agent,
+            identifier: None,
         }
     }
 
