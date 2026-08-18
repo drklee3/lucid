@@ -1,0 +1,1 @@
+link smoke test
