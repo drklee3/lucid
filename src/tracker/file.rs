@@ -5,7 +5,8 @@
 //! today without needing Linear API credentials.
 
 use super::{
-    DecisionState, Proposal, ReviewMode, TrackerAdapter, TrackerIssue, render_description,
+    DecisionState, Proposal, ReviewMode, TrackerAdapter, TrackerIssue, render_comment,
+    render_description,
 };
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -138,6 +139,21 @@ impl TrackerAdapter for FileTracker {
             });
         }
         self.persist(&issues)
+    }
+
+    async fn list_comments(&self, issue_id: &str) -> anyhow::Result<Vec<String>> {
+        let issues = self.issues.lock().unwrap();
+        Ok(issues
+            .iter()
+            .find(|i| i.id == issue_id)
+            .map(|issue| {
+                issue
+                    .notes
+                    .iter()
+                    .map(|note| render_comment("lucid", note))
+                    .collect()
+            })
+            .unwrap_or_default())
     }
 }
 
@@ -274,6 +290,38 @@ mod tests {
         assert_eq!(issues[0].notes, vec!["hello".to_string()]);
 
         drop(issues);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn list_comments_returns_notes_in_order() {
+        let path = scratch_path("list-comments");
+        let tracker = FileTracker::open(&path).unwrap();
+        let id = tracker
+            .create_proposal(&proposal("Some proposal"))
+            .await
+            .unwrap();
+
+        tracker.attach_note(&id, "first note").await.unwrap();
+        tracker.attach_note(&id, "second note").await.unwrap();
+
+        let comments = tracker.list_comments(&id).await.unwrap();
+        assert_eq!(
+            comments,
+            vec![
+                "lucid: first note".to_string(),
+                "lucid: second note".to_string()
+            ]
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn list_comments_is_empty_for_an_unknown_issue() {
+        let path = scratch_path("list-comments-unknown");
+        let tracker = FileTracker::open(&path).unwrap();
+        assert!(tracker.list_comments("NOPE-1").await.unwrap().is_empty());
         let _ = std::fs::remove_file(&path);
     }
 }

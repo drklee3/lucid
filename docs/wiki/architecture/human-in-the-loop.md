@@ -23,13 +23,11 @@ pub trait NotificationSink: Send + Sync {
 
 Each call site already exists and already knows exactly what it needs to say — `worker::finalize_completion`'s `NeedsHuman` branch, the new needs-input branch (below), and `mark_done`'s success path. A no-op `NullSink` is the default (matches today's behavior exactly); a `WebhookSink` (templated: `{issue_title}`, `{issue_url}`, `{pr_url}`, `{question}` interpolated into a user-configured message template, POSTed to any URL) is the first real implementation — covers Discord, Slack, or anything else that takes a webhook, without lucid knowing anything Discord-specific. `lucid.toml` gets one new optional `[notifications]` section: a template string per event and a webhook URL. No hardcoded Discord dependency in the binary at all.
 
-## The common case: approval-time clarification (build this first)
+## The common case: approval-time clarification
 
-The actual, concrete gap today: `worker::dispatch_prompt` builds its prompt from `issue.description` only (`src/worker.rs`) — and `TrackerAdapter` has no method to read comments back at all, only `attach_note` to write them. So if a human adds clarifying info as a Linear *comment* while reviewing a `Pending` proposal — the natural, low-friction way to do it, not hand-editing the frontmatter description — the Worker never sees it. An edited `description` field would actually work today (the issue is re-fetched fresh right before dispatch, not read once at filing time), but nobody clarifies a ticket by rewriting its structured body.
+If a human adds clarifying info as a Linear *comment* while reviewing a `Pending` proposal — the natural, low-friction way to do it, not hand-editing the frontmatter description — the Worker sees it. `TrackerAdapter::list_comments` reads the issue's comment thread back (the read counterpart to `attach_note`, which only writes); `LinearAdapter` queries Linear's `issue.comments` (author name + body, paginated), `FileTracker` renders its own `notes` field the same way. `worker::dispatch_prompt` takes the fetched comments as a parameter and, when non-empty, folds the issue's **full current comment thread** into the prompt as a `## Comments` section appended after the description — not a delta since filing, everything, every time. The caller (`dispatch_and_review_in_worktree`) calls `list_comments` fresh immediately before building the prompt on every dispatch, not cached, not delta-tracked — the same way title/description are already re-fetched fresh right before dispatch rather than read once at filing time. Linear is genuinely the user-facing surface here; there's no reason to track "what's new" when the whole thread is cheap to pull every time.
 
-Fix: `TrackerAdapter` gains a read method (`list_comments` or similar), and `dispatch_prompt` folds the issue's **full current comment thread** into the prompt, appended after the description — not a delta since filing, just always fetch and include everything, the same way title/description are already re-fetched fresh right before dispatch rather than read once at filing time. Linear is genuinely the user-facing surface here; there's no reason to track "what's new" when the whole thread is cheap to pull every time.
-
-That thread will also contain lucid's own automated notes (`attach_note`'s dispatch-status/PR-link/verify-failure messages, posted to the same comment stream) mixed in with human comments — include them rather than filtering them out. A Worker that can see "here's what happened last attempt" alongside "here's what the human said" has strictly more context, and which is which is almost always obvious from content; filtering adds real complexity (tagging or pattern-matching lucid's own notes) for marginal benefit.
+That thread also contains lucid's own automated notes (`attach_note`'s dispatch-status/PR-link/verify-failure messages, posted to the same comment stream) mixed in with human comments — include them rather than filtering them out. A Worker that can see "here's what happened last attempt" alongside "here's what the human said" has strictly more context, and which is which is almost always obvious from content; filtering adds real complexity (tagging or pattern-matching lucid's own notes) for marginal benefit.
 
 No new `DecisionState`, no new `WorkerPhase`, no worktree lifecycle change, no session to manage — the existing `Pending`/`Approved` gate already does the waiting, for free. This is also where a PM proposal that's unsure of its own scope should say so explicitly (a future `confidence`/`needs_scoping` field on `Proposal`, `docs/FEATURES.md`'s already-flagged "Confidence score returned alongside findings") — but that's an enhancement to *what* gets asked, not a prerequisite for reading the answer.
 
@@ -66,13 +64,14 @@ Not a free fix, though: `--bare` also skips the project's own `CLAUDE.md` — wh
 
 ## Build order
 
-Each piece below is independently shippable:
+**Done: approval-time clarification** (`TrackerAdapter::list_comments` + fold into `dispatch_prompt`, above) — was item 1, smallest and highest-value, shipped with no state-machine changes.
 
-1. **Approval-time clarification** — `TrackerAdapter::list_comments` (full thread, every dispatch) + fold into `dispatch_prompt`. Smallest, highest value, covers the common case, no state-machine changes.
-2. `--bare` + explicit `CLAUDE.md` injection for all dispatches (Worker, PM, Reviewer) — no design risk, matches documented current best practice.
-3. `NotificationSink` trait + `NullSink` default + `WebhookSink` (templated) — additive, zero behavior change until configured.
-4. `NEEDS_INPUT:` marker parsing + `AwaitingHumanInput` producer + worktree-keep-alive exception + `on_awaiting_input` hook — the rare-case mechanism, lowest priority of the five.
-5. Resume-on-reapproval: check `DaemonState.runs` for a stored `session_id` before building a fresh prompt; dispatch via `--resume` when present.
-6. Staleness timeout for parked `AwaitingHumanInput` issues, alongside the existing `reconcile_needs_review` tick step.
+The rest is independently shippable:
 
-(5) depends on (4); everything else is independent and can land in any order.
+1. `--bare` + explicit `CLAUDE.md` injection for all dispatches (Worker, PM, Reviewer) — no design risk, matches documented current best practice.
+2. `NotificationSink` trait + `NullSink` default + `WebhookSink` (templated) — additive, zero behavior change until configured.
+3. `NEEDS_INPUT:` marker parsing + `AwaitingHumanInput` producer + worktree-keep-alive exception + `on_awaiting_input` hook — the rare-case mechanism, lowest priority of the remaining pieces.
+4. Resume-on-reapproval: check `DaemonState.runs` for a stored `session_id` before building a fresh prompt; dispatch via `--resume` when present.
+5. Staleness timeout for parked `AwaitingHumanInput` issues, alongside the existing `reconcile_needs_review` tick step.
+
+(4) depends on (3); everything else is independent and can land in any order.

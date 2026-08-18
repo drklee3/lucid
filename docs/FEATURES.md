@@ -46,7 +46,8 @@ listed separately and are explicitly out of v1.
 
 ## Tracker adapter
 
-- [x] `TrackerAdapter` trait: `create_proposal`, `set_decision_state`, `query_by_decision_state`, `query_similar`, `attach_note`
+- [x] `TrackerAdapter` trait: `create_proposal`, `set_decision_state`, `query_by_decision_state`, `query_similar`, `attach_note`, `list_comments`
+- [x] Approval-time clarification: `list_comments` fetched fresh before every dispatch and folded into `worker::dispatch_prompt` as a `## Comments` section — see `docs/wiki/architecture/human-in-the-loop.md`
 - [x] Linear implementation (GraphQL via `reqwest`, typed request/response structs via `serde` — see `docs/wiki/architecture/tracker-adapter.md` § `LinearAdapter` implementation notes)
 - [x] File-backed local implementation (`src/tracker/file.rs`) — not in the original design, added so the dispatch/PM loop could be proven end-to-end without Linear credentials; a real backend, not a mock
 - [x] Structured proposal issue body: title, one-line summary, "why now" bullets, effort estimate (S/M/L), risk note, YAML frontmatter (`task_type`, `target_paths`, `acceptance_criteria`, `research_ref`, `review`) — `render_description` (shared by both adapters) renders it, `TrackerIssue.description` carries it back out to the dispatch prompt, and `examples/e2e_smoke.rs` proved the full round trip live against a real `claude -p` dispatch

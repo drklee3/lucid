@@ -364,6 +364,9 @@ mod tests {
                 .push((issue_id.to_string(), body.to_string()));
             Ok(())
         }
+        async fn list_comments(&self, _issue_id: &str) -> anyhow::Result<Vec<String>> {
+            Ok(Vec::new())
+        }
     }
 
     fn issue() -> TrackerIssue {
