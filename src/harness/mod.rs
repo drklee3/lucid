@@ -293,6 +293,15 @@ pub async fn dispatch_with_fallback(req: DispatchRequest<'_>) -> anyhow::Result<
             &dispatch_id,
         );
         apply_dispatch_flags(&mut cmd, profile.kind, req.claude_extra_args);
+        // Claude Code's arg parser can otherwise swallow the prompt into a
+        // preceding flag's value (observed with `--allowedTools <list>`: the
+        // list's parser consumes the next bare token too, so `--print` then sees
+        // no prompt at all and exits before ever emitting a `result` event). `--`
+        // forces everything after it to be a positional argument, defusing this
+        // regardless of which flags happen to precede the prompt.
+        if profile.kind == HarnessKind::ClaudeCode {
+            cmd.arg("--");
+        }
         cmd.arg(req.prompt);
 
         let output = match tokio::time::timeout(req.timeout, cmd.output()).await {
