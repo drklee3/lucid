@@ -220,6 +220,7 @@ pub fn build(config: &crate::config::TrackerConfig) -> anyhow::Result<Box<dyn Tr
                 api_key,
                 team_key,
                 config.project_key.clone(),
+                config.managed_label.clone(),
             )))
         }
         other => Err(anyhow::anyhow!(

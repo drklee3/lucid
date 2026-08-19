@@ -95,6 +95,13 @@ pub struct TrackerConfig {
     /// `backend = "file"`, unused by other backends.
     #[serde(default)]
     pub file_path: Option<PathBuf>,
+    /// Label (e.g. `"lucid"`) every query `LinearAdapter` uses to find its own
+    /// work additionally requires, on top of `team_key`/`project_key` scoping —
+    /// see docs/wiki/architecture/tracker-adapter.md. `None` preserves today's
+    /// behavior (team/project scoping only, no label filter). Like `team_key`,
+    /// lucid never creates this label: a missing one is a workspace-setup error.
+    #[serde(default)]
+    pub managed_label: Option<String>,
 }
 
 /// Where dispatched harnesses send `OTel` traces/logs — see
