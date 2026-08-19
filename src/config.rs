@@ -13,6 +13,62 @@ pub struct Config {
     pub observability: ObservabilityConfig,
     #[serde(default)]
     pub daemon: DaemonConfig,
+    /// Repos this daemon instance watches, each a pointer to a checked-out
+    /// working copy rather than a full config block — see
+    /// docs/wiki/architecture/multi-project.md. Empty by default so today's
+    /// single-project `lucid.toml` shape keeps loading unchanged.
+    #[serde(default)]
+    pub projects: Vec<ProjectPointer>,
+}
+
+/// One entry in `[[projects]]` — just the path to a repo this daemon watches.
+/// The repo-specific settings (tracker project key, `verify_cmd`,
+/// `base_branch`) live in that repo's own checked-in [`ProjectConfig`], not
+/// here, so a project's settings travel with its code (Symphony's
+/// `WORKFLOW.md` pattern — see docs/wiki/architecture/symphony-patterns.md).
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ProjectPointer {
+    pub path: PathBuf,
+}
+
+/// Filename of the per-repo checked-in config file each `[[projects]]` entry's
+/// `path` is expected to contain.
+pub const PROJECT_CONFIG_FILENAME: &str = "lucid.project.toml";
+
+/// The repo-owned half of per-project config — checked into and versioned
+/// with the project's own code, read from `PROJECT_CONFIG_FILENAME` at the
+/// project's pointer path. See docs/wiki/architecture/multi-project.md.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ProjectConfig {
+    /// Linear project name/slug/id to scope issues to — same meaning as
+    /// `TrackerConfig::project_key`, but declared by the repo rather than the
+    /// operator's central config.
+    #[serde(default)]
+    pub project_key: Option<String>,
+    /// This project's deterministic verify step (see
+    /// docs/wiki/architecture/worker-completion.md). `None` leaves the review
+    /// agent to infer its own command.
+    #[serde(default)]
+    pub verify_cmd: Option<String>,
+    /// Branch this project's dispatch worktrees are created from, and PRs
+    /// target. Defaults to `"main"`.
+    #[serde(default = "default_base_branch")]
+    pub base_branch: String,
+}
+
+impl ProjectConfig {
+    /// # Errors
+    /// Returns an error if `PROJECT_CONFIG_FILENAME` under `project_path` can't
+    /// be read or doesn't parse as valid TOML matching this shape.
+    pub fn load(project_path: &Path) -> anyhow::Result<Self> {
+        let config_path = project_path.join(PROJECT_CONFIG_FILENAME);
+        let data = std::fs::read_to_string(&config_path).map_err(|e| {
+            anyhow::anyhow!("reading project config at {}: {e}", config_path.display())
+        })?;
+        toml::from_str(&data).map_err(|e| {
+            anyhow::anyhow!("parsing project config at {}: {e}", config_path.display())
+        })
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -182,6 +238,22 @@ impl Config {
         }
         Ok(config)
     }
+
+    /// Resolves and validates every configured project's own
+    /// `PROJECT_CONFIG_FILENAME`.
+    ///
+    /// # Errors
+    /// Returns an error naming the offending project's path if that project's
+    /// config file is missing or fails to parse.
+    pub fn validate_projects(&self) -> anyhow::Result<Vec<ProjectConfig>> {
+        self.projects
+            .iter()
+            .map(|project| {
+                ProjectConfig::load(&project.path)
+                    .map_err(|e| anyhow::anyhow!("project `{}`: {e}", project.path.display()))
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -232,6 +304,196 @@ mod tests {
     fn missing_file_errors_instead_of_panicking() {
         let err = Config::load(Path::new("/nonexistent/lucid.toml")).unwrap_err();
         assert!(err.to_string().contains("reading config"));
+    }
+
+    #[test]
+    fn loads_a_single_project_config_unchanged_from_todays_shape() {
+        let toml = r#"
+            [[harness_profiles]]
+            name = "claude-subscription"
+            kind = "ClaudeCode"
+            cmd = "claude"
+            args = ["-p"]
+            auth_mode = "Subscription"
+            priority = 1
+
+            [tracker]
+            backend = "file"
+            file_path = "/tmp/lucid-test-tracker.json"
+
+            [presence]
+            idle_threshold_minutes = 20
+            proposal_cap_per_wake = 3
+
+            [observability]
+            otlp_endpoint = "http://localhost:4317"
+            trace_ui_base_url = "http://localhost:6006"
+        "#;
+        let path =
+            std::env::temp_dir().join(format!("lucid-config-test-{}.toml", uuid::Uuid::new_v4()));
+        std::fs::write(&path, toml).unwrap();
+
+        let config = Config::load(&path).unwrap();
+        assert!(config.projects.is_empty());
+        assert!(config.validate_projects().unwrap().is_empty());
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn loads_a_multi_project_config_and_resolves_each_projects_file() {
+        let project_dir =
+            std::env::temp_dir().join(format!("lucid-project-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&project_dir).unwrap();
+        std::fs::write(
+            project_dir.join(PROJECT_CONFIG_FILENAME),
+            r#"
+                project_key = "ENG-123"
+                verify_cmd = "cargo test"
+                base_branch = "trunk"
+            "#,
+        )
+        .unwrap();
+
+        let toml = format!(
+            r#"
+            [[harness_profiles]]
+            name = "claude-subscription"
+            kind = "ClaudeCode"
+            cmd = "claude"
+            args = ["-p"]
+            auth_mode = "Subscription"
+            priority = 1
+
+            [tracker]
+            backend = "file"
+            file_path = "/tmp/lucid-test-tracker.json"
+
+            [presence]
+            idle_threshold_minutes = 20
+            proposal_cap_per_wake = 3
+
+            [observability]
+            otlp_endpoint = "http://localhost:4317"
+            trace_ui_base_url = "http://localhost:6006"
+
+            [[projects]]
+            path = "{}"
+        "#,
+            project_dir.display()
+        );
+        let path =
+            std::env::temp_dir().join(format!("lucid-config-test-{}.toml", uuid::Uuid::new_v4()));
+        std::fs::write(&path, toml).unwrap();
+
+        let config = Config::load(&path).unwrap();
+        assert_eq!(config.projects.len(), 1);
+        let projects = config.validate_projects().unwrap();
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].project_key.as_deref(), Some("ENG-123"));
+        assert_eq!(projects[0].verify_cmd.as_deref(), Some("cargo test"));
+        assert_eq!(projects[0].base_branch, "trunk");
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir_all(&project_dir);
+    }
+
+    #[test]
+    fn missing_project_config_file_produces_a_clear_per_project_error() {
+        let project_dir =
+            std::env::temp_dir().join(format!("lucid-project-test-{}", uuid::Uuid::new_v4()));
+        // Deliberately not creating the directory / config file.
+
+        let toml = format!(
+            r#"
+            [[harness_profiles]]
+            name = "claude-subscription"
+            kind = "ClaudeCode"
+            cmd = "claude"
+            args = ["-p"]
+            auth_mode = "Subscription"
+            priority = 1
+
+            [tracker]
+            backend = "file"
+            file_path = "/tmp/lucid-test-tracker.json"
+
+            [presence]
+            idle_threshold_minutes = 20
+            proposal_cap_per_wake = 3
+
+            [observability]
+            otlp_endpoint = "http://localhost:4317"
+            trace_ui_base_url = "http://localhost:6006"
+
+            [[projects]]
+            path = "{}"
+        "#,
+            project_dir.display()
+        );
+        let path =
+            std::env::temp_dir().join(format!("lucid-config-test-{}.toml", uuid::Uuid::new_v4()));
+        std::fs::write(&path, toml).unwrap();
+
+        let config = Config::load(&path).unwrap();
+        let err = config.validate_projects().unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains(&project_dir.display().to_string()));
+        assert!(message.contains("reading project config"));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn malformed_project_config_file_produces_a_clear_per_project_error() {
+        let project_dir =
+            std::env::temp_dir().join(format!("lucid-project-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&project_dir).unwrap();
+        std::fs::write(
+            project_dir.join(PROJECT_CONFIG_FILENAME),
+            "not valid toml =",
+        )
+        .unwrap();
+
+        let toml = format!(
+            r#"
+            [[harness_profiles]]
+            name = "claude-subscription"
+            kind = "ClaudeCode"
+            cmd = "claude"
+            args = ["-p"]
+            auth_mode = "Subscription"
+            priority = 1
+
+            [tracker]
+            backend = "file"
+            file_path = "/tmp/lucid-test-tracker.json"
+
+            [presence]
+            idle_threshold_minutes = 20
+            proposal_cap_per_wake = 3
+
+            [observability]
+            otlp_endpoint = "http://localhost:4317"
+            trace_ui_base_url = "http://localhost:6006"
+
+            [[projects]]
+            path = "{}"
+        "#,
+            project_dir.display()
+        );
+        let path =
+            std::env::temp_dir().join(format!("lucid-config-test-{}.toml", uuid::Uuid::new_v4()));
+        std::fs::write(&path, toml).unwrap();
+
+        let config = Config::load(&path).unwrap();
+        let err = config.validate_projects().unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains(&project_dir.display().to_string()));
+        assert!(message.contains("parsing project config"));
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir_all(&project_dir);
     }
 
     fn write_profile_only_config(extra_profile_lines: &str) -> PathBuf {

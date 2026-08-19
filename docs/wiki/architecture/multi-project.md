@@ -16,6 +16,16 @@ Today `lucid.toml` and `Daemon` both assume exactly one repo, one tracker bindin
 
 Config shape: the central `lucid.toml` gains a `[[projects]]` array (same pattern `[[harness_profiles]]` already uses) — each entry a **pointer**, not a full config: `path = "/home/drk/github/repo-a"`. Each pointed-to repo carries its own lightweight checked-in config file for the repo-specific bits (tracker project key, `verify_cmd`, `base_branch`) — Symphony's `WORKFLOW.md` shape, adapted. The daemon's own config says *which repos to watch*; each repo's own file says *how it wants to be worked on*. A project's settings travel with its code instead of living only in one operator's local, gitignored file.
 
+### Implemented (build order item 1, commit `5f661d4`)
+
+`Config` (`src/config.rs`) gained `projects: Vec<ProjectPointer>`, `#[serde(default)]` so today's single-project `lucid.toml` shape keeps loading unchanged. `ProjectPointer` is just `{ path: PathBuf }` — the pointer described above, nothing more.
+
+Each pointed-to repo's own file is named `lucid.project.toml` — a filename this page hadn't specified before implementation; it's now the fixed name `ProjectConfig::load` reads from a project's `path`. `ProjectConfig` holds `project_key: Option<String>`, `verify_cmd: Option<String>`, and `base_branch: String` (`#[serde(default = "default_base_branch")]`, defaulting to `"main"`).
+
+Validation is opt-in, not eager: `Config::validate_projects()` resolves and parses every configured project's `lucid.project.toml`, returning a per-project error naming the offending path if one is missing or malformed. It's only called from the `lucid config validate` CLI command (`src/main.rs`) — every other command that calls `Config::load()` doesn't touch `[[projects]]` at all today, so a broken per-project config file stays silent until an operator explicitly runs `config validate`.
+
+**Open, unresolved**: `TrackerConfig.project_key` (existing, global, under `[tracker]`) and `ProjectConfig.project_key` (new, per-repo, in `lucid.project.toml`) now both exist with identical meaning. Nothing consumes or reconciles the per-project one yet — it's inert until the daemon loop (build order items 2-3) actually wires per-project dispatch through the tracker. Which one wins, or whether they need to be merged into one field, is not decided.
+
 ## Daemon loop
 
 `Daemon::tick()` already does reconcile → presence-check → dispatch → PM-wake in one pass per call. This wraps that in `for project in &self.projects`, still fully sequential for `Local`-execution dispatches (see [sandboxed-execution](sandboxed-execution.md) for when that constraint relaxes) — one project's dispatch completes before the next project's starts, within a tick, matching the daemon's existing "deliberately sequential" design rather than introducing a second concurrency model to reason about.
@@ -36,7 +46,7 @@ Lucid already resolves `lucid.toml` by directory/file discovery (`--config` → 
 
 ## Build order
 
-1. `[[projects]]` pointer array in `lucid.toml` + per-repo checked-in config file shape (the `WORKFLOW.md`-equivalent).
+1. `[[projects]]` pointer array in `lucid.toml` + per-repo checked-in config file shape (the `WORKFLOW.md`-equivalent). **Done** — see Implemented section above.
 2. `DaemonState` re-keyed by project id.
 3. `Daemon::tick()` loops projects sequentially.
 4. `--project <name>` CLI flag + directory-detection default across the `task` subcommands.

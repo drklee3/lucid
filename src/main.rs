@@ -278,6 +278,10 @@ async fn config_validate(config: Option<PathBuf>) -> anyhow::Result<()> {
             );
         }
     }
+    config.validate_projects()?;
+    if !config.projects.is_empty() {
+        println!("{} project(s) valid", config.projects.len());
+    }
     println!("{} is valid", path.display());
     Ok(())
 }
