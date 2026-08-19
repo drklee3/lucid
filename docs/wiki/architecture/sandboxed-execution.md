@@ -25,7 +25,9 @@ pub enum ExecutionBackend {
 }
 ```
 
-`lucid.toml`'s `[[harness_profiles]]` entries default to requiring a sandbox; running one locally needs an explicit, unmistakably-named field — `unsandboxed = true`, not `execution = "local"` — so a config file reads as a decision, not a neutral setting someone toggled without noticing what it traded away.
+As shipped (build order step 1, `src/harness/mod.rs`), `ExecutionBackend` is `{ Sandboxed, Local }` — unit variants, no `SandboxKind` payload. There is no real sandboxed backend yet (step 2), so there's nothing for a payload to name; the tuple form above is the target shape once a Docker/microVM backend exists, not the current one.
+
+`lucid.toml`'s `[[harness_profiles]]` entries default to requiring a sandbox; running one locally needs an explicit, unmistakably-named field — `unsandboxed = true`, not `execution = "local"` — so a config file reads as a decision, not a neutral setting someone toggled without noticing what it traded away. `HarnessProfile::validate()` enforces this: `execution_backend = Local` without `unsandboxed = true` fails config load outright (`Config::load` calls it for every profile), and `lucid config validate` additionally prints a `warning: profile \`{name}\` runs unsandboxed` line for every profile that does have the opt-out set, so an unsandboxed profile is visible even when the config is otherwise valid.
 
 **Decided: self-hosted Docker (or microVM), not Claude Code's `--cloud` flag.** `--cloud` was a candidate raised mid-design (surfaced in `claude --help` output, never independently verified) but deliberately dropped — lucid stays harness-agnostic (Codex is a first-class profile kind, not a hypothetical), and `--cloud` would only ever cover the Claude Code half of that. Docker/microVM costs real infrastructure lucid now owns and operates, but it's the only candidate that works uniformly across every `HarnessKind`, which matters more than the zero-infra convenience `--cloud` would have offered for one harness only.
 
@@ -39,9 +41,9 @@ Any [project](multi-project.md) that accepts externally-triggered tickets must h
 
 ## Build order
 
-1. `ExecutionBackend` enum + config shape (`unsandboxed = true` opt-out), `Local` behaves identically to today — no behavior change until a `Sandboxed` backend actually exists.
-2. First real `Sandboxed` implementation: Docker/microVM.
+1. **Done.** `ExecutionBackend` enum + config shape (`unsandboxed = true` opt-out), `Local` behaves identically to today — no behavior change until a `Sandboxed` backend actually exists. Shipped as unit variants (`Sandboxed`, `Local`), config-surface only: `HarnessProfile::validate()` rejects `Local` without `unsandboxed = true`, and `lucid config validate` warns per unsandboxed profile. `dispatch_with_fallback` and all dispatch behavior are unchanged.
+2. First real `Sandboxed` implementation: Docker/microVM. Once this exists, `ExecutionBackend::Sandboxed` gains its `SandboxKind` payload.
 3. `lucid config validate` trust-routing rail (depends on [multi-project](multi-project.md)'s ticket-source concept existing first).
 4. Relax `daemon.rs`'s sequential loop for `Sandboxed` dispatches specifically.
 
-Each step is gated on the one before it; nothing here is built yet.
+Each step is gated on the one before it; only step 1 is built so far.
