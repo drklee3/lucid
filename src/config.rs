@@ -177,6 +177,9 @@ impl Config {
             .map_err(|e| anyhow::anyhow!("reading config at {}: {e}", path.display()))?;
         let config: Self = toml::from_str(&data)
             .map_err(|e| anyhow::anyhow!("parsing config at {}: {e}", path.display()))?;
+        for profile in &config.harness_profiles {
+            profile.validate()?;
+        }
         Ok(config)
     }
 }
@@ -216,6 +219,11 @@ mod tests {
         assert_eq!(config.harness_profiles.len(), 1);
         assert_eq!(config.tracker.backend, "file");
         assert_eq!(config.daemon.tick_interval_secs, 30);
+        assert_eq!(
+            config.harness_profiles[0].execution_backend,
+            crate::harness::ExecutionBackend::Sandboxed
+        );
+        assert!(!config.harness_profiles[0].unsandboxed);
 
         let _ = std::fs::remove_file(&path);
     }
@@ -224,5 +232,63 @@ mod tests {
     fn missing_file_errors_instead_of_panicking() {
         let err = Config::load(Path::new("/nonexistent/lucid.toml")).unwrap_err();
         assert!(err.to_string().contains("reading config"));
+    }
+
+    fn write_profile_only_config(extra_profile_lines: &str) -> PathBuf {
+        let toml = format!(
+            r#"
+            [[harness_profiles]]
+            name = "claude-local"
+            kind = "ClaudeCode"
+            cmd = "claude"
+            args = ["-p"]
+            auth_mode = "Subscription"
+            priority = 1
+            {extra_profile_lines}
+
+            [tracker]
+            backend = "file"
+            file_path = "/tmp/lucid-test-tracker.json"
+
+            [presence]
+            idle_threshold_minutes = 20
+            proposal_cap_per_wake = 3
+
+            [observability]
+            otlp_endpoint = "http://localhost:4317"
+            trace_ui_base_url = "http://localhost:6006"
+        "#
+        );
+        let path =
+            std::env::temp_dir().join(format!("lucid-config-test-{}.toml", uuid::Uuid::new_v4()));
+        std::fs::write(&path, toml).unwrap();
+        path
+    }
+
+    #[test]
+    fn explicit_local_backend_with_opt_out_is_accepted() {
+        let path = write_profile_only_config(
+            r#"execution_backend = "Local"
+            unsandboxed = true"#,
+        );
+
+        let config = Config::load(&path).unwrap();
+        assert_eq!(
+            config.harness_profiles[0].execution_backend,
+            crate::harness::ExecutionBackend::Local
+        );
+        assert!(config.harness_profiles[0].unsandboxed);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn local_backend_without_opt_out_is_rejected() {
+        let path = write_profile_only_config(r#"execution_backend = "Local""#);
+
+        let err = Config::load(&path).unwrap_err();
+        assert!(err.to_string().contains("unsandboxed = true"));
+
+        let _ = std::fs::remove_file(&path);
     }
 }

@@ -687,7 +687,7 @@ async fn mark_done(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harness::{AuthMode, HarnessKind};
+    use crate::harness::{AuthMode, ExecutionBackend, HarnessKind};
     use crate::tracker::{DecisionState, Proposal, ReviewMode, TrackerIssue};
     use async_trait::async_trait;
     use std::sync::Mutex;
@@ -871,6 +871,8 @@ mod tests {
             args: vec![],
             auth_mode: AuthMode::Subscription,
             priority: 1,
+            execution_backend: ExecutionBackend::Sandboxed,
+            unsandboxed: false,
         }];
 
         let run = run_dispatch(
@@ -912,6 +914,8 @@ mod tests {
             args: vec![],
             auth_mode: AuthMode::Subscription,
             priority: 1,
+            execution_backend: ExecutionBackend::Sandboxed,
+            unsandboxed: false,
         }];
 
         let run = run_dispatch(
@@ -989,6 +993,8 @@ mod tests {
             ],
             auth_mode: AuthMode::Subscription,
             priority: 1,
+            execution_backend: ExecutionBackend::Sandboxed,
+            unsandboxed: false,
         }];
 
         let run = run_dispatch(
@@ -1042,6 +1048,8 @@ mod tests {
             ],
             auth_mode: AuthMode::Subscription,
             priority: 1,
+            execution_backend: ExecutionBackend::Sandboxed,
+            unsandboxed: false,
         }];
 
         let run = run_dispatch(
@@ -1321,6 +1329,8 @@ mod tests {
             args: vec!["-c".into(), format!("echo '{event}'")],
             auth_mode: AuthMode::Subscription,
             priority: 1,
+            execution_backend: ExecutionBackend::Sandboxed,
+            unsandboxed: false,
         }];
 
         let verdict = decide_review(
