@@ -1,13 +1,12 @@
 # lucid
 
-Presence-aware daemon that keeps developing your repo while you're away, and gets out of the way when you're back.
+Daemon that dispatches your approved tickets to a coding harness in the background, in parallel with whatever you're working on yourself.
 
 Named for lucid dreaming: it acts on its own, but stays directed within bounds you set — never fully unsupervised.
 
-- **Investigates** a repo against a stated goal and flags concrete gaps as tracker proposals for you to approve.
-- **Dispatches** approved work to a coding harness (`claude -p`, `codex exec`, ...) in an isolated git worktree, sandboxed by default.
-- **Reconciles**: retries stalled runs, opens/merges PRs via `gh`, reports back — the same loop whether you're watching or not.
-- **Presence-gated**, not cron-scheduled: autonomous work only runs once you've gone idle.
+- **Dispatches** approved tickets to a coding harness (`claude -p`, `codex exec`, ...) in an isolated git worktree, sandboxed by default — runs continuously, whether you're at the keyboard or not, since each ticket was already human-approved.
+- **Reconciles**: retries stalled runs, opens/merges PRs via `gh`, reports back.
+- **Optionally investigates** the repo against a stated goal and flags gaps as new proposals for you to approve — this proactive gap-finding is presence-gated, only running once you've gone idle, unlike ticket dispatch itself.
 - Tracker-agnostic, harness-agnostic, model-agnostic by design.
 
 See [`docs/wiki/index.md`](docs/wiki/index.md) for full architecture and resolved decisions, and [`docs/FEATURES.md`](docs/FEATURES.md) for what's built vs. still open.
@@ -19,16 +18,16 @@ flowchart TB
     subgraph daemon["lucid daemon (Rust, always-on)"]
         direction TB
 
-        presence["Presence watcher\nidle/active detection"]
-
-        subgraph pm_block["Proposal pipeline"]
-            direction LR
-            pm["PM agent\ngap detection on wake"] --> research["Research agent\nfeasibility validation"]
-        end
-
-        subgraph worker_block["Dispatch pipeline"]
+        subgraph worker_block["Dispatch pipeline (core loop, presence-independent)"]
             direction LR
             worktree["Per-issue git worktree"] --> exec["Harness dispatch\nsandboxed by default"] --> pr["PR open / merge\nvia gh"]
+        end
+
+        presence["Presence watcher\nidle/active detection"]
+
+        subgraph pm_block["Proposal pipeline (optional, presence-gated)"]
+            direction LR
+            pm["PM agent\ngap detection on wake"] --> research["Research agent\nfeasibility validation"]
         end
 
         reconcile["Reconciliation loop\npoll · stall-detect · retry"]
@@ -55,14 +54,7 @@ flowchart TB
 
 Everything inside the daemon is one small standalone process — no framework, no embedded agent host. Each labeled piece has its own wiki page: [presence](docs/wiki/architecture/presence-detection.md), [PM scope](docs/wiki/architecture/pm-scope.md), [research agent](docs/wiki/architecture/research-agent.md), [tracker adapter](docs/wiki/architecture/tracker-adapter.md), [harness dispatch](docs/wiki/architecture/harness-dispatch.md), [sandboxed execution](docs/wiki/architecture/sandboxed-execution.md), [worker completion](docs/wiki/architecture/worker-completion.md), [reconciliation](docs/wiki/architecture/symphony-patterns.md).
 
-## Status
-
-Working MVP, live-tested against real `claude -p` subscription dispatch — not a prototype, but not feature-complete either.
-
-- ✅ Presence-gated reconciliation loop (`lucid start`), PM gap-detection wake, Claude Code dispatch with block/timeout handling, file-backed and real Linear tracker adapters, OTel trace correlation, per-issue git worktree isolation with PR-based completion (`gh`-driven push/open/merge, auto-merge when `ReviewMode` allows it).
-- ⛔ No cross-process `status`/`stop` (needs an IPC layer, not designed yet). State is in-memory only — no restart persistence.
-
-See [`docs/FEATURES.md`](docs/FEATURES.md) for the itemized breakdown.
+See [`docs/FEATURES.md`](docs/FEATURES.md) for the itemized built-vs-open breakdown.
 
 ## Quickstart
 
@@ -70,12 +62,13 @@ Requires `git` and an authenticated [`gh`](https://cli.github.com/) on `PATH` �
 
 ```bash
 cargo build --release
+export PATH="$PWD/target/release:$PATH"
 
 # write lucid.toml — see Configuration below for what goes in it
 docker compose up -d          # optional: Arize Phoenix, for trace correlation
-./target/release/lucid config validate
-./target/release/lucid presence override autonomous   # logind auto-detection isn't wired up yet
-./target/release/lucid start --foreground
+lucid config validate
+lucid presence override autonomous   # logind auto-detection isn't wired up yet
+lucid start --foreground
 ```
 
 Full command reference: [`docs/CLI.md`](docs/CLI.md).
