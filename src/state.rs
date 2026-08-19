@@ -108,6 +108,14 @@ pub type ProjectId = String;
 /// projects' dispatch retry-tracking and PM-wake backoff timers don't collide
 /// once one daemon manages several repos (see
 /// docs/wiki/architecture/multi-project.md).
+///
+/// This is also what keeps `FileTracker`'s `LOCAL-{n}` ids (a counter local to
+/// one JSON file, so two `FileTracker`-backed projects independently produce
+/// the same id) from colliding here: `runs` nests `HashMap<String, WorkerRun>`
+/// per `ProjectId`, so the inner map's `LOCAL-1` key from one project is a
+/// different entry than another project's `LOCAL-1`, never the same slot.
+/// Verified end to end (real `FileTracker` pair + real `Daemon`/`save_state`)
+/// by `daemon::tests::same_numbered_local_ids_across_projects_do_not_collide_in_daemon_state`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DaemonState {
     pub runs: HashMap<ProjectId, HashMap<String, WorkerRun>>,
