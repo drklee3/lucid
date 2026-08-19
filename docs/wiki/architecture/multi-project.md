@@ -20,7 +20,7 @@ Config shape: the central `lucid.toml` gains a `[[projects]]` array (same patter
 
 `Config` (`src/config.rs`) gained `projects: Vec<ProjectPointer>`, `#[serde(default)]` so today's single-project `lucid.toml` shape keeps loading unchanged. `ProjectPointer` is just `{ path: PathBuf }` — the pointer described above, nothing more.
 
-Each pointed-to repo's own file is named `lucid.project.toml` — a filename this page hadn't specified before implementation; it's now the fixed name `ProjectConfig::load` reads from a project's `path`. `ProjectConfig` holds `project_key: Option<String>`, `verify_cmd: Option<String>`, and `base_branch: String` (`#[serde(default = "default_base_branch")]`, defaulting to `"main"`).
+Each pointed-to repo's own file is named `lucid.project.toml` — a filename this page hadn't specified before implementation; it's now the fixed name `ProjectConfig::load` reads from a project's `path`. `ProjectConfig` holds `project_key: Option<String>`, `verify_cmd: Option<String>`, `base_branch: String` (`#[serde(default = "default_base_branch")]`, defaulting to `"main"`), and `ticket_source: TicketSource` (`#[serde(default)]`, defaulting to `OperatorOnly` — see [sandboxed-execution](sandboxed-execution.md) § Trust routing for what this field gates).
 
 Validation is opt-in, not eager: `Config::validate_projects()` resolves and parses every configured project's `lucid.project.toml`, returning a per-project error naming the offending path if one is missing or malformed. It's only called from the `lucid config validate` CLI command (`src/main.rs`) — every other command that calls `Config::load()` doesn't touch `[[projects]]` at all today, so a broken per-project config file stays silent until an operator explicitly runs `config validate`.
 
