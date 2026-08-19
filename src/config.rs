@@ -13,6 +13,13 @@ pub struct Config {
     pub observability: ObservabilityConfig,
     #[serde(default)]
     pub daemon: DaemonConfig,
+    /// Where human-facing lifecycle events (needs-review, done) get sent — see
+    /// docs/wiki/architecture/human-in-the-loop.md and
+    /// docs/wiki/architecture/extensibility-primitives.md. Fully optional: a
+    /// `lucid.toml` with no `[notifications]` section gets `NullSink` (today's
+    /// behavior, unchanged).
+    #[serde(default)]
+    pub notifications: NotificationConfig,
     /// Repos this daemon instance watches, each a pointer to a checked-out
     /// working copy rather than a full config block — see
     /// docs/wiki/architecture/multi-project.md. Empty by default so today's
@@ -236,6 +243,46 @@ fn default_worktree_root() -> PathBuf {
     std::env::temp_dir().join("lucid-worktrees")
 }
 
+/// See `Config::notifications`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NotificationConfig {
+    /// `"null"` (default, no-op) or `"script"` (see `notify::script::ScriptSink`).
+    #[serde(default = "default_notification_backend")]
+    pub backend: String,
+    /// Directory holding one executable per event (`on_awaiting_input`,
+    /// `on_needs_review`, `on_done`), resolved against `daemon.workdir` if
+    /// relative. Unused by the `null` backend.
+    #[serde(default = "default_notify_script_dir")]
+    pub script_dir: PathBuf,
+    /// Per-call subprocess timeout — see
+    /// docs/wiki/architecture/extensibility-primitives.md's timeout defaults
+    /// (10s for one-shot calls).
+    #[serde(default = "default_notify_timeout_secs")]
+    pub timeout_secs: u64,
+}
+
+impl Default for NotificationConfig {
+    fn default() -> Self {
+        Self {
+            backend: default_notification_backend(),
+            script_dir: default_notify_script_dir(),
+            timeout_secs: default_notify_timeout_secs(),
+        }
+    }
+}
+
+fn default_notification_backend() -> String {
+    "null".to_string()
+}
+
+fn default_notify_script_dir() -> PathBuf {
+    PathBuf::from(".lucid/notify")
+}
+
+fn default_notify_timeout_secs() -> u64 {
+    10
+}
+
 /// `$XDG_STATE_HOME/lucid/presence-override`, falling back to
 /// `~/.local/state/lucid/presence-override` when `XDG_STATE_HOME` and `HOME` are
 /// both unset this just returns a relative fallback rather than panicking, since
@@ -355,6 +402,55 @@ mod tests {
             crate::harness::ExecutionBackend::Sandboxed
         );
         assert!(!config.harness_profiles[0].unsandboxed);
+        assert_eq!(config.notifications.backend, "null");
+        assert_eq!(
+            config.notifications.script_dir,
+            PathBuf::from(".lucid/notify")
+        );
+        assert_eq!(config.notifications.timeout_secs, 10);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn loads_a_configured_notifications_section() {
+        let toml = r#"
+            [[harness_profiles]]
+            name = "claude-subscription"
+            kind = "ClaudeCode"
+            cmd = "claude"
+            args = ["-p"]
+            auth_mode = "Subscription"
+            priority = 1
+
+            [tracker]
+            backend = "file"
+            file_path = "/tmp/lucid-test-tracker.json"
+
+            [presence]
+            idle_threshold_minutes = 20
+            proposal_cap_per_wake = 3
+
+            [observability]
+            otlp_endpoint = "http://localhost:4317"
+            trace_ui_base_url = "http://localhost:6006"
+
+            [notifications]
+            backend = "script"
+            script_dir = "custom/notify"
+            timeout_secs = 5
+        "#;
+        let path =
+            std::env::temp_dir().join(format!("lucid-config-test-{}.toml", uuid::Uuid::new_v4()));
+        std::fs::write(&path, toml).unwrap();
+
+        let config = Config::load(&path).unwrap();
+        assert_eq!(config.notifications.backend, "script");
+        assert_eq!(
+            config.notifications.script_dir,
+            PathBuf::from("custom/notify")
+        );
+        assert_eq!(config.notifications.timeout_secs, 5);
 
         let _ = std::fs::remove_file(&path);
     }

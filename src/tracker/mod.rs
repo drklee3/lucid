@@ -129,7 +129,7 @@ pub fn decision_state_from_name(name: &str) -> Option<DecisionState> {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct TrackerIssue {
     pub id: String,
     pub title: String,

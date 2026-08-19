@@ -23,7 +23,7 @@ pub trait NotificationSink: Send + Sync {
 }
 ```
 
-Each call site already exists and already knows exactly what it needs to say — `worker::finalize_completion`'s `NeedsHuman` branch, the new needs-input branch (below), and `mark_done`'s success path. A no-op `NullSink` is the default (matches today's behavior exactly); a `WebhookSink` (templated: `{issue_title}`, `{issue_url}`, `{pr_url}`, `{question}` interpolated into a user-configured message template, POSTed to any URL) is the first real implementation — covers Discord, Slack, or anything else that takes a webhook, without lucid knowing anything Discord-specific. `lucid.toml` gets one new optional `[notifications]` section: a template string per event and a webhook URL. No hardcoded Discord dependency in the binary at all.
+Each call site already exists and already knows exactly what it needs to say — `worker::finalize_completion`'s `NeedsHuman` branch, the new needs-input branch (below), and `mark_done`'s success path. **Built**: a no-op `NullSink` is the default (matches today's behavior exactly); `ScriptSink` (see [extensibility-primitives](extensibility-primitives.md) § Pilot) is the real implementation — a one-shot subprocess per event (`on_awaiting_input`/`on_needs_review`/`on_done`), a JSON payload on stdin, fire-and-forget. A Discord/Slack/anything-that-takes-a-webhook notification is a user-supplied script (a five-line `curl`), not a first-party Rust type — lucid doesn't know Discord exists. `lucid.toml`'s `[notifications]` section is `backend` (`"null"`/`"script"`), `script_dir` (default `.lucid/notify`), `timeout_secs` (default `10`) — not a template string, since the script owns its own formatting. Note: `TrackerIssue` has no `url` field, so there's no `issue_url` in the payload; `identifier` (Linear's human-readable id, `None` for `FileTracker`) is the closest available substitute.
 
 ## The common case: approval-time clarification
 
@@ -71,8 +71,8 @@ Not a free fix, though: `--bare` also skips the project's own `CLAUDE.md` — wh
 The rest is independently shippable:
 
 1. `--bare` + explicit `CLAUDE.md` injection for all dispatches (Worker, PM, Reviewer) — no design risk, matches documented current best practice.
-2. `NotificationSink` trait + `NullSink` default + `WebhookSink` (templated) — additive, zero behavior change until configured.
-3. `NEEDS_INPUT:` marker parsing + `AwaitingHumanInput` producer + worktree-keep-alive exception + `on_awaiting_input` hook — the rare-case mechanism, lowest priority of the remaining pieces.
+2. **Done**: `NotificationSink` trait + `NullSink` default + `ScriptSink` — wired into `on_needs_review`/`on_done`, additive, zero behavior change unless `[notifications].backend = "script"` is set.
+3. `NEEDS_INPUT:` marker parsing + `AwaitingHumanInput` producer + worktree-keep-alive exception + `on_awaiting_input` call site — the rare-case mechanism, lowest priority of the remaining pieces. `ScriptSink::on_awaiting_input` is already implemented, just has no caller yet.
 4. Resume-on-reapproval: check `DaemonState.runs` for a stored `session_id` before building a fresh prompt; dispatch via `--resume` when present.
 5. Staleness timeout for parked `AwaitingHumanInput` issues, alongside the existing `reconcile_needs_review` tick step.
 

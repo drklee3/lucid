@@ -117,6 +117,7 @@ async fn main() -> anyhow::Result<()> {
         "main",
         std::time::Duration::from_secs(120),
         None,
+        &lucid::notify::null::NullSink,
     )
     .await?;
 

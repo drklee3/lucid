@@ -568,6 +568,7 @@ async fn task_dispatch_now(
         );
     }
 
+    let notification_sink = lucid::notify::build(&config.notifications, &config.daemon.workdir)?;
     let run = lucid::worker::dispatch_and_finalize(
         tracker.as_ref(),
         &issue,
@@ -578,6 +579,7 @@ async fn task_dispatch_now(
         &base_branch,
         Duration::from_secs(config.daemon.stall_timeout_secs),
         verify_cmd.as_deref(),
+        notification_sink.as_ref(),
     )
     .await?;
 

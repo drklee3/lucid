@@ -10,6 +10,7 @@
 
 use crate::config::ObservabilityConfig;
 use crate::harness::{self, DispatchError, DispatchRequest, HarnessProfile, TelemetryConfig};
+use crate::notify::NotificationSink;
 use crate::pr::{self, PullRequest};
 use crate::state::{ClaimState, ClaimedSubstate, WorkerPhase, WorkerRun};
 use crate::tracker::{DecisionState, ReviewMode, TrackerAdapter, TrackerIssue};
@@ -289,6 +290,7 @@ pub async fn dispatch_and_finalize(
     base_branch: &str,
     stall_timeout: Duration,
     verify_cmd: Option<&str>,
+    notification_sink: &dyn NotificationSink,
 ) -> anyhow::Result<WorkerRun> {
     let wt = worktree::create(repo_root, worktree_root, base_branch, &issue.id).await?;
 
@@ -320,7 +322,15 @@ pub async fn dispatch_and_finalize(
 
     let (run, verdict, pr_outcome) = outcome?;
     if let Some(verdict) = verdict {
-        finalize_completion(tracker, issue, verdict, repo_root, &pr_outcome).await?;
+        finalize_completion(
+            tracker,
+            issue,
+            verdict,
+            repo_root,
+            &pr_outcome,
+            notification_sink,
+        )
+        .await?;
     }
     Ok(run)
 }
@@ -629,14 +639,19 @@ async fn finalize_completion(
     verdict: ReviewVerdict,
     repo_root: &Path,
     pr_outcome: &PrOutcome,
+    notification_sink: &dyn NotificationSink,
 ) -> anyhow::Result<()> {
     match verdict {
         ReviewVerdict::NeedsHuman => {
             tracker
                 .set_decision_state(&issue.id, DecisionState::NeedsReview)
-                .await
+                .await?;
+            notify_needs_review(notification_sink, issue, pr_outcome).await;
+            Ok(())
         }
-        ReviewVerdict::CloseAutomatically => mark_done(tracker, issue, repo_root, pr_outcome).await,
+        ReviewVerdict::CloseAutomatically => {
+            mark_done(tracker, issue, repo_root, pr_outcome, notification_sink).await
+        }
     }
 }
 
@@ -656,31 +671,72 @@ async fn mark_done(
     issue: &TrackerIssue,
     repo_root: &Path,
     pr_outcome: &PrOutcome,
+    notification_sink: &dyn NotificationSink,
 ) -> anyhow::Result<()> {
     match pr_outcome {
         PrOutcome::NoChanges => {
             tracker
                 .set_decision_state(&issue.id, DecisionState::Done)
-                .await
+                .await?;
+            notify_done(notification_sink, issue).await;
+            Ok(())
         }
         PrOutcome::Failed => {
             tracker
                 .set_decision_state(&issue.id, DecisionState::NeedsReview)
-                .await
+                .await?;
+            notify_needs_review(notification_sink, issue, pr_outcome).await;
+            Ok(())
         }
         PrOutcome::Created(pr) => {
             if let Err(e) = pr::merge(repo_root, &pr.branch).await {
                 tracker
                     .attach_note(&issue.id, &format!("Could not merge PR {}: {e}", pr.url))
                     .await?;
-                return tracker
+                tracker
                     .set_decision_state(&issue.id, DecisionState::NeedsReview)
-                    .await;
+                    .await?;
+                notify_needs_review(notification_sink, issue, pr_outcome).await;
+                return Ok(());
             }
             tracker
                 .set_decision_state(&issue.id, DecisionState::Done)
-                .await
+                .await?;
+            notify_done(notification_sink, issue).await;
+            Ok(())
         }
+    }
+}
+
+/// Fires `on_needs_review`, extracting `pr_url` from `pr_outcome` when a PR
+/// exists (`PrOutcome::Created` only — `NoChanges`/`Failed` pass `None`). All
+/// THREE paths that reach `DecisionState::NeedsReview` — the explicit
+/// `ReviewVerdict::NeedsHuman` verdict, `PrOutcome::Failed`, and a merge failure
+/// inside `PrOutcome::Created` — call this the same way: the notification is
+/// about the observable state transition, not which internal branch produced
+/// it. Never fatal: logged and swallowed, matching `dispatch_and_finalize`'s
+/// existing "worktree teardown failures are logged, not propagated" convention.
+async fn notify_needs_review(
+    sink: &dyn NotificationSink,
+    issue: &TrackerIssue,
+    pr_outcome: &PrOutcome,
+) {
+    let pr_url = match pr_outcome {
+        PrOutcome::Created(pr) => Some(pr.url.as_str()),
+        PrOutcome::NoChanges | PrOutcome::Failed => None,
+    };
+    if let Err(e) = sink.on_needs_review(issue, pr_url).await {
+        eprintln!(
+            "warning: on_needs_review notification failed for {}: {e}",
+            issue.id
+        );
+    }
+}
+
+/// See `notify_needs_review` — same non-fatal logging convention.
+async fn notify_done(sink: &dyn NotificationSink, issue: &TrackerIssue) {
+    if let Err(e) = sink.on_done(issue).await {
+        eprintln!("warning: on_done notification failed for {}: {e}", issue.id);
     }
 }
 
@@ -747,6 +803,48 @@ mod tests {
         }
         async fn blockers(&self, _issue_id: &str) -> anyhow::Result<Vec<TrackerIssue>> {
             Ok(Vec::new())
+        }
+    }
+
+    /// Records every notification fired, in place of a real sink. `fail` makes
+    /// every call return `Err`, to prove notification failures never propagate
+    /// out of `finalize_completion`/`mark_done`.
+    #[derive(Default)]
+    struct RecordingSink {
+        needs_review: Mutex<Vec<(String, Option<String>)>>,
+        done: Mutex<Vec<String>>,
+        fail: bool,
+    }
+
+    #[async_trait]
+    impl NotificationSink for RecordingSink {
+        async fn on_awaiting_input(
+            &self,
+            _issue: &TrackerIssue,
+            _question: &str,
+        ) -> anyhow::Result<()> {
+            unimplemented!("not exercised by these tests")
+        }
+        async fn on_needs_review(
+            &self,
+            issue: &TrackerIssue,
+            pr_url: Option<&str>,
+        ) -> anyhow::Result<()> {
+            self.needs_review
+                .lock()
+                .unwrap()
+                .push((issue.id.clone(), pr_url.map(String::from)));
+            if self.fail {
+                anyhow::bail!("simulated sink failure");
+            }
+            Ok(())
+        }
+        async fn on_done(&self, issue: &TrackerIssue) -> anyhow::Result<()> {
+            self.done.lock().unwrap().push(issue.id.clone());
+            if self.fail {
+                anyhow::bail!("simulated sink failure");
+            }
+            Ok(())
         }
     }
 
@@ -1129,6 +1227,7 @@ mod tests {
     #[tokio::test]
     async fn finalize_completion_close_automatically_no_changes_marks_done() {
         let tracker = MockTracker::default();
+        let sink = RecordingSink::default();
         let issue = plain_issue("ENG-30", None);
         finalize_completion(
             &tracker,
@@ -1136,6 +1235,7 @@ mod tests {
             ReviewVerdict::CloseAutomatically,
             &std::env::temp_dir(),
             &PrOutcome::NoChanges,
+            &sink,
         )
         .await
         .unwrap();
@@ -1143,11 +1243,14 @@ mod tests {
             *tracker.decisions.lock().unwrap(),
             vec![("ENG-30".to_string(), DecisionState::Done)]
         );
+        assert_eq!(*sink.done.lock().unwrap(), vec!["ENG-30".to_string()]);
+        assert!(sink.needs_review.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
     async fn finalize_completion_needs_human_sets_needs_review() {
         let tracker = MockTracker::default();
+        let sink = RecordingSink::default();
         let issue = plain_issue("ENG-31", None);
         finalize_completion(
             &tracker,
@@ -1155,12 +1258,43 @@ mod tests {
             ReviewVerdict::NeedsHuman,
             &std::env::temp_dir(),
             &PrOutcome::NoChanges,
+            &sink,
         )
         .await
         .unwrap();
         assert_eq!(
             *tracker.decisions.lock().unwrap(),
             vec![("ENG-31".to_string(), DecisionState::NeedsReview)]
+        );
+        assert_eq!(
+            *sink.needs_review.lock().unwrap(),
+            vec![("ENG-31".to_string(), None)]
+        );
+    }
+
+    /// Proves the core guarantee: a sink that fails must never make
+    /// `finalize_completion` fail — notifications are strictly best-effort.
+    #[tokio::test]
+    async fn finalize_completion_survives_a_failing_sink() {
+        let tracker = MockTracker::default();
+        let sink = RecordingSink {
+            fail: true,
+            ..Default::default()
+        };
+        let issue = plain_issue("ENG-31B", None);
+        finalize_completion(
+            &tracker,
+            &issue,
+            ReviewVerdict::NeedsHuman,
+            &std::env::temp_dir(),
+            &PrOutcome::NoChanges,
+            &sink,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            *tracker.decisions.lock().unwrap(),
+            vec![("ENG-31B".to_string(), DecisionState::NeedsReview)]
         );
     }
 
@@ -1171,6 +1305,7 @@ mod tests {
     #[tokio::test]
     async fn finalize_completion_pr_open_failure_needs_review_not_done() {
         let tracker = MockTracker::default();
+        let sink = RecordingSink::default();
         let issue = plain_issue("ENG-32", None);
         finalize_completion(
             &tracker,
@@ -1178,12 +1313,17 @@ mod tests {
             ReviewVerdict::CloseAutomatically,
             &std::env::temp_dir(),
             &PrOutcome::Failed,
+            &sink,
         )
         .await
         .unwrap();
         assert_eq!(
             *tracker.decisions.lock().unwrap(),
             vec![("ENG-32".to_string(), DecisionState::NeedsReview)]
+        );
+        assert_eq!(
+            *sink.needs_review.lock().unwrap(),
+            vec![("ENG-32".to_string(), None)]
         );
     }
 
@@ -1202,6 +1342,7 @@ mod tests {
             .unwrap();
 
         let tracker = MockTracker::default();
+        let sink = RecordingSink::default();
         let issue = plain_issue("ENG-33", None);
         let pr_outcome = PrOutcome::Created(PullRequest {
             url: "https://example.invalid/pr/1".to_string(),
@@ -1213,12 +1354,20 @@ mod tests {
             ReviewVerdict::CloseAutomatically,
             &repo_root,
             &pr_outcome,
+            &sink,
         )
         .await
         .unwrap();
         assert_eq!(
             *tracker.decisions.lock().unwrap(),
             vec![("ENG-33".to_string(), DecisionState::NeedsReview)]
+        );
+        assert_eq!(
+            *sink.needs_review.lock().unwrap(),
+            vec![(
+                "ENG-33".to_string(),
+                Some("https://example.invalid/pr/1".to_string())
+            )]
         );
         assert!(
             tracker.notes.lock().unwrap()[0]

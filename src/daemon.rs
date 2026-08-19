@@ -37,6 +37,7 @@
 
 use crate::config::{Config, ObservabilityConfig, PresenceConfig, TrackerConfig};
 use crate::harness::{ExecutionBackend, HarnessProfile};
+use crate::notify::NotificationSink;
 use crate::pm;
 use crate::pr;
 use crate::presence::audit_log::AuditLog;
@@ -64,6 +65,7 @@ const BLOCKED_NOTE_MARKER: &str = "[lucid:blocked]";
 pub struct Daemon {
     profiles: Vec<HarnessProfile>,
     observability: ObservabilityConfig,
+    notification_sink: Box<dyn NotificationSink>,
     presence_sources: PresenceSourceList,
     presence_cfg: PresenceConfig,
     override_file: OverrideFile,
@@ -156,6 +158,8 @@ impl Daemon {
             .unwrap_or_else(crate::config::default_override_path);
         let state_path = DaemonState::default_path();
         let loaded = DaemonState::load(&state_path);
+        let notification_sink =
+            crate::notify::build(&config.notifications, &config.daemon.workdir)?;
 
         let projects = if config.projects.is_empty() {
             let project_id: ProjectId = config.daemon.workdir.to_string_lossy().into_owned();
@@ -205,6 +209,7 @@ impl Daemon {
                 trace_ui_base_url: config.observability.trace_ui_base_url.clone(),
                 trace_ui_project_id: config.observability.trace_ui_project_id.clone(),
             },
+            notification_sink,
             presence_sources,
             presence_cfg: PresenceConfig {
                 idle_threshold_minutes: config.presence.idle_threshold_minutes,
@@ -420,6 +425,7 @@ impl Daemon {
             &project.base_branch,
             self.stall_timeout,
             project.verify_cmd.as_deref(),
+            self.notification_sink.as_ref(),
         )
         .await?;
         println!("{issue_id} finished: {:?}", run.phase);
@@ -904,6 +910,7 @@ mod tests {
                 trace_ui_base_url: "http://localhost:6006".to_string(),
                 trace_ui_project_id: None,
             },
+            notification_sink: Box::new(crate::notify::null::NullSink),
             presence_sources: PresenceSourceList::new(Vec::new()),
             presence_cfg: PresenceConfig {
                 idle_threshold_minutes: 20,
@@ -1040,6 +1047,7 @@ mod tests {
                 trace_ui_base_url: "http://localhost:6006".to_string(),
                 trace_ui_project_id: None,
             },
+            notification_sink: Box::new(crate::notify::null::NullSink),
             presence_sources: PresenceSourceList::new(Vec::new()),
             presence_cfg: PresenceConfig {
                 idle_threshold_minutes: 20,
