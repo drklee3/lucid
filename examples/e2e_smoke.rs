@@ -11,7 +11,7 @@
 //! completes; see docker-compose.yml.
 
 use lucid::config::ObservabilityConfig;
-use lucid::harness::{AuthMode, HarnessKind, HarnessProfile};
+use lucid::harness::{AuthMode, ExecutionBackend, HarnessKind, HarnessProfile};
 use lucid::tracker::file::FileTracker;
 use lucid::tracker::{DecisionState, EffortEstimate, Proposal, ReviewMode, TrackerAdapter};
 use lucid::worker;
@@ -31,6 +31,8 @@ async fn main() -> anyhow::Result<()> {
         args: vec!["-p".to_string()],
         auth_mode: AuthMode::Subscription,
         priority: 1,
+        execution_backend: ExecutionBackend::Sandboxed,
+        unsandboxed: false,
     }];
 
     let observability = ObservabilityConfig {

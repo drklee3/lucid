@@ -270,6 +270,14 @@ async fn config_validate(config: Option<PathBuf>) -> anyhow::Result<()> {
     let path = resolve_config_path(config);
     let config = Config::load(&path)?;
     lucid::tracker::build(&config.tracker)?;
+    for profile in &config.harness_profiles {
+        if profile.unsandboxed {
+            println!(
+                "warning: profile `{}` runs unsandboxed (execution_backend = Local)",
+                profile.name
+            );
+        }
+    }
     println!("{} is valid", path.display());
     Ok(())
 }

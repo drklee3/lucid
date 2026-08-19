@@ -43,6 +43,19 @@ pub enum HarnessKind {
     Codex,
 }
 
+/// Where a profile's dispatched process actually runs. `Sandboxed` is the only
+/// backend a profile can silently default to; `Local` (runs directly on the
+/// host, no isolation) requires the profile to also set `unsandboxed = true` —
+/// see `HarnessProfile::validate`. No real `Sandboxed` implementation exists
+/// yet (see docs/wiki/architecture/sandboxed-execution.md); this is config
+/// surface only and doesn't change `dispatch_with_fallback`'s behavior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ExecutionBackend {
+    #[default]
+    Sandboxed,
+    Local,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HarnessProfile {
     pub name: String,
@@ -55,6 +68,36 @@ pub struct HarnessProfile {
     /// Lower runs first. Profiles for the same logical harness typically pair a
     /// subscription profile (priority 1) with an API-key fallback (priority 2).
     pub priority: u8,
+    /// Defaults to `Sandboxed`. A profile requesting `Local` must also set
+    /// `unsandboxed = true` — see `validate`.
+    #[serde(default)]
+    pub execution_backend: ExecutionBackend,
+    /// The explicit, scary-named opt-out required to run a profile's process
+    /// directly on the host instead of a sandbox. Deliberately not named
+    /// something neutral like `local` — the unsafe option should read as unsafe
+    /// at the point it's set.
+    #[serde(default)]
+    pub unsandboxed: bool,
+}
+
+impl HarnessProfile {
+    /// Rejects a profile that requests `Local` execution without also setting
+    /// the explicit `unsandboxed = true` opt-out. Never rejects `Sandboxed`
+    /// (the default), regardless of `unsandboxed`.
+    ///
+    /// # Errors
+    /// Returns an error if `execution_backend = Local` and `unsandboxed` is not
+    /// `true`.
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if self.execution_backend == ExecutionBackend::Local && !self.unsandboxed {
+            anyhow::bail!(
+                "harness profile `{}` requests execution_backend = \"Local\" but does not set \
+                 unsandboxed = true — an explicit opt-out is required to run unsandboxed",
+                self.name
+            );
+        }
+        Ok(())
+    }
 }
 
 /// Where to send OTLP traces/logs for dispatched harness runs, and whether to opt
@@ -399,6 +442,8 @@ mod tests {
                 args: vec![],
                 auth_mode: AuthMode::Subscription,
                 priority: 2,
+                execution_backend: ExecutionBackend::Sandboxed,
+                unsandboxed: false,
             },
             HarnessProfile {
                 name: "a".into(),
@@ -407,6 +452,8 @@ mod tests {
                 args: vec![],
                 auth_mode: AuthMode::Subscription,
                 priority: 1,
+                execution_backend: ExecutionBackend::Sandboxed,
+                unsandboxed: false,
             },
         ];
         let mut ordered: Vec<&HarnessProfile> = profiles.iter().collect();
@@ -430,6 +477,8 @@ mod tests {
             args: vec!["-c".into(), "sleep 30".into()],
             auth_mode: AuthMode::Subscription,
             priority: 1,
+            execution_backend: ExecutionBackend::Sandboxed,
+            unsandboxed: false,
         }];
         let telemetry = telemetry();
         let req = DispatchRequest {

@@ -168,7 +168,7 @@ pub async fn wake(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harness::{AuthMode, HarnessKind};
+    use crate::harness::{AuthMode, ExecutionBackend, HarnessKind};
     use crate::tracker::file::FileTracker;
 
     #[test]
@@ -230,6 +230,8 @@ mod tests {
             args: vec!["-c".to_string(), format!("echo '{event}'")],
             auth_mode: AuthMode::Subscription,
             priority: 1,
+            execution_backend: ExecutionBackend::Sandboxed,
+            unsandboxed: false,
         }
     }
 
