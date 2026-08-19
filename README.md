@@ -100,6 +100,7 @@ subscription profile plus an API-key fallback) run in `priority` order.
 | `api_key_env` | string | Required for `backend = "linear"`. Env var holding the API key (e.g. `LINEAR_API_KEY`). |
 | `team_key` | string | Required for `backend = "linear"`. Linear's short team key (e.g. `ENG`), not its UUID. |
 | `project_key` | string | Optional, `linear` only. Scopes lucid to one Linear project within `team_key` — Linear issues don't require a project, so omitting this operates team-wide. |
+| `managed_label` | string | Optional, `linear` only. Scopes every lucid query further to issues carrying this label, and `create_proposal` attaches it automatically. Prevents a human moving an unrelated issue into the same workflow state from being swept into lucid's dispatch loop. Omitting this preserves today's team/project-only scoping. |
 
 ### `[presence]`
 

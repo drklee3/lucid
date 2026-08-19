@@ -26,6 +26,7 @@ pub struct LinearAdapter {
     api_key: String,
     team_key: String,
     project_key: Option<String>,
+    managed_label: Option<String>,
 }
 
 impl LinearAdapter {
@@ -33,13 +34,21 @@ impl LinearAdapter {
     /// it's what a human can read off the issue identifiers they're triaging.
     /// `project_key` optionally scopes lucid to a single project within that team
     /// (Linear issues don't require a project, so `None` leaves it team-wide).
+    /// `managed_label` optionally scopes every lucid-authored query further to
+    /// issues carrying that label — see `team_and_project_filter`.
     #[must_use]
-    pub fn new(api_key: String, team_key: String, project_key: Option<String>) -> Self {
+    pub fn new(
+        api_key: String,
+        team_key: String,
+        project_key: Option<String>,
+        managed_label: Option<String>,
+    ) -> Self {
         Self {
             client: reqwest::Client::new(),
             api_key,
             team_key,
             project_key,
+            managed_label,
         }
     }
 
@@ -87,13 +96,25 @@ impl LinearAdapter {
             .ok_or_else(|| anyhow!("linear graphql response had neither data nor errors: {body}"))
     }
 
-    /// Team scope, plus project scope when `project_key` is configured. Built as a
-    /// JSON value (rather than a `$project` GraphQL variable) so an unset project
-    /// omits the clause entirely instead of filtering for a literal null project.
+    /// Team scope, plus project scope when `project_key` is configured, plus
+    /// label scope when `managed_label` is configured. Built as a JSON value
+    /// (rather than `$project`/`$label` GraphQL variables) so an unset field
+    /// omits its clause entirely instead of filtering for a literal null.
+    ///
+    /// The label clause matches by name, same as the project clause — unlike
+    /// `labelIds` on a mutation (which needs a real id), Linear's `IssueFilter`
+    /// accepts a label name directly, so no extra `label_id` round-trip is
+    /// needed just to read. This is what scopes lucid's own queries to issues
+    /// it manages, distinct from any other issue a human moves into the same
+    /// team/project/workflow state for unrelated reasons — see
+    /// docs/wiki/architecture/tracker-adapter.md.
     fn team_and_project_filter(&self) -> Value {
         let mut filter = json!({ "team": { "key": { "eq": self.team_key } } });
         if let Some(project) = &self.project_key {
             filter["project"] = json!({ "name": { "eq": project } });
+        }
+        if let Some(label) = &self.managed_label {
+            filter["labels"] = json!({ "some": { "name": { "eq": label } } });
         }
         filter
     }
@@ -245,6 +266,10 @@ impl TrackerAdapter for LinearAdapter {
             )
             .await?;
         let review_label_id = self.label_id(review_label(proposal.review)).await?;
+        let mut label_ids = vec![review_label_id];
+        if let Some(managed_label) = &self.managed_label {
+            label_ids.push(self.label_id(managed_label).await?);
+        }
         let team = team_id(
             &self
                 .graphql(TEAM_ID_QUERY, json!({ "team": self.team_key }))
@@ -257,7 +282,7 @@ impl TrackerAdapter for LinearAdapter {
             "title": proposal.title,
             "description": render_description(proposal),
             "stateId": pending_state_id,
-            "labelIds": [review_label_id],
+            "labelIds": label_ids,
         });
         if let Some(project) = &self.project_key {
             input["projectId"] = json!(self.project_id(project).await?);
@@ -825,7 +850,7 @@ mod tests {
 
     #[test]
     fn project_filter_omitted_when_project_key_unset() {
-        let adapter = LinearAdapter::new("key".to_string(), "ENG".to_string(), None);
+        let adapter = LinearAdapter::new("key".to_string(), "ENG".to_string(), None, None);
         assert_eq!(
             adapter.team_and_project_filter(),
             json!({ "team": { "key": { "eq": "ENG" } } })
@@ -838,12 +863,47 @@ mod tests {
             "key".to_string(),
             "ENG".to_string(),
             Some("Lucid".to_string()),
+            None,
         );
         assert_eq!(
             adapter.team_and_project_filter(),
             json!({
                 "team": { "key": { "eq": "ENG" } },
                 "project": { "name": { "eq": "Lucid" } },
+            })
+        );
+    }
+
+    #[test]
+    fn label_filter_omitted_when_managed_label_unset() {
+        let adapter = LinearAdapter::new(
+            "key".to_string(),
+            "ENG".to_string(),
+            Some("Lucid".to_string()),
+            None,
+        );
+        assert_eq!(
+            adapter.team_and_project_filter(),
+            json!({
+                "team": { "key": { "eq": "ENG" } },
+                "project": { "name": { "eq": "Lucid" } },
+            })
+        );
+    }
+
+    #[test]
+    fn label_filter_included_when_managed_label_set() {
+        let adapter = LinearAdapter::new(
+            "key".to_string(),
+            "ENG".to_string(),
+            None,
+            Some("lucid".to_string()),
+        );
+        assert_eq!(
+            adapter.team_and_project_filter(),
+            json!({
+                "team": { "key": { "eq": "ENG" } },
+                "labels": { "some": { "name": { "eq": "lucid" } } },
             })
         );
     }
