@@ -5,15 +5,25 @@
 //! docs/wiki/architecture/observability.md (v1 is CLI-only: this loop prints its
 //! own activity to stdout rather than serving a dashboard or an IPC status query).
 //!
-//! Deliberately sequential, not a concurrent task-supervisor: each tick dispatches
-//! due work one issue at a time, fully awaited, and — per
-//! docs/wiki/architecture/multi-project.md — projects are walked one at a time
-//! too, not run concurrently. A true concurrent multi-worker loop (spawn + poll
-//! across ticks, or parallel projects) is more machinery than this pass covers —
-//! see the [2026-08-17] daemon-loop entry in docs/wiki/log.md. Stall protection
-//! still works (`harness::DispatchRequest::timeout` kills a hung process), it
-//! just means one very slow dispatch delays the next tick's other work rather
-//! than running alongside it.
+//! Mixed sequential/concurrent dispatch, not a full concurrent task-supervisor:
+//! within one project's tick, issues whose resolved harness profile is
+//! `ExecutionBackend::Sandboxed` dispatch concurrently with each other (each
+//! gets its own isolated container, so nothing shared to contend over — see
+//! docs/wiki/architecture/sandboxed-execution.md), while `Local` dispatches
+//! (still sharing this host's `worktree_root`/process table) stay strictly
+//! sequential, fully awaited one at a time, exactly as every dispatch used to
+//! be before a real sandboxed backend existed. Projects themselves are still
+//! walked one at a time, not run concurrently — per
+//! docs/wiki/architecture/multi-project.md. A true concurrent multi-worker loop
+//! (spawn + poll across ticks, or parallel projects) is more machinery than this
+//! pass covers — see the [2026-08-17] daemon-loop entry in docs/wiki/log.md.
+//! Stall protection still works (`harness::DispatchRequest::timeout` kills a
+//! hung process), it just means one very slow `Local` dispatch delays the next
+//! `Local` dispatch in the same tick rather than running alongside it —
+//! `Sandboxed` dispatches are unaffected either way. Concurrency within a
+//! `Sandboxed` batch is deliberately uncapped — every approved `Sandboxed`
+//! issue in a tick dispatches at once, one `docker run` each; there's no
+//! configured concurrency limit yet.
 //!
 //! Presence is resolved once per tick, globally — there's exactly one human
 //! whose "away" state matters, so it doesn't vary by project. Everything else
@@ -26,7 +36,7 @@
 //! `presence::audit_log` (see [`crate::state::DaemonState`]).
 
 use crate::config::{Config, ObservabilityConfig, PresenceConfig, TrackerConfig};
-use crate::harness::HarnessProfile;
+use crate::harness::{ExecutionBackend, HarnessProfile};
 use crate::pm;
 use crate::pr;
 use crate::presence::audit_log::AuditLog;
@@ -345,6 +355,7 @@ impl Daemon {
             .tracker
             .query_by_decision_state(DecisionState::Approved)
             .await?;
+        let mut to_dispatch = Vec::new();
         for issue in approved {
             if !skip_if_blocked(project.tracker.as_ref(), &issue)
                 .await?
@@ -356,8 +367,11 @@ impl Daemon {
 
             // Dispatch on first sight, or retry a previous `Failed`/`TimedOut` run
             // — anything else (in particular `Succeeded`) is done and stays done.
-            // No true in-flight tracking: ticks are sequential (see module doc),
-            // so nothing is ever mid-run between ticks under this pass.
+            // No true in-flight tracking: a `Local` retry only ever competes with
+            // other `Local` dispatches (still sequential, see module doc), and a
+            // `Sandboxed` retry gets its own container regardless of what else is
+            // running, so nothing is ever mid-run in a way this check needs to
+            // account for.
             let should_dispatch = {
                 let runs = project.runs.lock().unwrap();
                 runs.get(&issue.id).is_none_or(|prev| {
@@ -371,26 +385,46 @@ impl Daemon {
                 continue;
             }
 
-            println!("dispatching {} — {}", issue.id, issue.title);
-            // Also decides Done / NeedsReview per `issue.review` — a no-op for a
-            // Failed/TimedOut run, which leaves the tracker item `Approved` so the
-            // `should_dispatch` check above retries it on a later tick.
-            let run = worker::dispatch_and_finalize(
-                project.tracker.as_ref(),
-                &issue,
-                &self.profiles,
-                &self.observability,
-                &project.workdir,
-                &self.worktree_root,
-                &project.base_branch,
-                self.stall_timeout,
-                project.verify_cmd.as_deref(),
-            )
-            .await?;
-            println!("{} finished: {:?}", issue.id, run.phase);
-
-            project.runs.lock().unwrap().insert(issue.id, run);
+            to_dispatch.push(issue);
         }
+
+        // `self.profiles` is one list shared by every issue in this batch, so
+        // every issue resolves to the same backend today — `dispatch_partitioned`
+        // still takes it per-issue so the scheduling logic itself doesn't assume
+        // that, and is exercised directly against mixed batches in tests.
+        let backend = resolve_execution_backend(&self.profiles);
+        let tagged = to_dispatch.into_iter().map(|issue| (issue, backend));
+        dispatch_partitioned(tagged, |issue| self.dispatch_one(project, issue)).await
+    }
+
+    /// Runs and records one issue's dispatch — the unit `dispatch_partitioned`
+    /// fans out over, whether that's sequentially (`Local`) or concurrently
+    /// (`Sandboxed`).
+    async fn dispatch_one(
+        &self,
+        project: &ProjectRuntime,
+        issue: TrackerIssue,
+    ) -> anyhow::Result<()> {
+        println!("dispatching {} — {}", issue.id, issue.title);
+        let issue_id = issue.id.clone();
+        // Also decides Done / NeedsReview per `issue.review` — a no-op for a
+        // Failed/TimedOut run, which leaves the tracker item `Approved` so the
+        // `should_dispatch` check above retries it on a later tick.
+        let run = worker::dispatch_and_finalize(
+            project.tracker.as_ref(),
+            &issue,
+            &self.profiles,
+            &self.observability,
+            &project.workdir,
+            &self.worktree_root,
+            &project.base_branch,
+            self.stall_timeout,
+            project.verify_cmd.as_deref(),
+        )
+        .await?;
+        println!("{issue_id} finished: {:?}", run.phase);
+
+        project.runs.lock().unwrap().insert(issue_id, run);
         Ok(())
     }
 
@@ -523,6 +557,62 @@ pub async fn skip_if_blocked(
         tracker.attach_note(&issue.id, &note).await?;
     }
     Ok(unresolved)
+}
+
+/// The `ExecutionBackend` a dispatch batch resolves to: the lowest-`priority`
+/// (first-tried, see `harness::dispatch_with_fallback`) profile's backend —
+/// what a dispatch actually runs under absent a mid-run fallback to a later
+/// profile. Empty `profiles` resolves to `Local`, the conservative (sequential)
+/// choice, since `dispatch_with_fallback` itself errors on no profiles anyway.
+fn resolve_execution_backend(profiles: &[HarnessProfile]) -> ExecutionBackend {
+    profiles
+        .iter()
+        .min_by_key(|p| p.priority)
+        .map_or(ExecutionBackend::Local, |p| p.execution_backend)
+}
+
+/// Runs every `(issue, backend)` pair in `issues` through `dispatch_one`,
+/// scheduled per docs/wiki/architecture/sandboxed-execution.md: `Sandboxed`
+/// entries run concurrently with each other (each gets its own isolated
+/// container — nothing shared to contend over), `Local` entries run strictly
+/// sequentially, fully awaited one at a time (they still share this host's
+/// `worktree_root`/process table). The two groups also run concurrently with
+/// each other — a `Local` dispatch never blocks on unrelated `Sandboxed` work,
+/// and vice versa.
+///
+/// # Errors
+/// Returns the first error hit — a `Local` entry's error stops that sequential
+/// chain immediately (matching the old fully-sequential loop's short-circuit);
+/// a `Sandboxed` entry's error is collected after every other `Sandboxed`
+/// dispatch in the batch has finished, since they're already running
+/// concurrently by the time one fails.
+async fn dispatch_partitioned<F, Fut>(
+    issues: impl IntoIterator<Item = (TrackerIssue, ExecutionBackend)>,
+    dispatch_one: F,
+) -> anyhow::Result<()>
+where
+    F: Fn(TrackerIssue) -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<()>>,
+{
+    let (sandboxed, local): (Vec<_>, Vec<_>) = issues
+        .into_iter()
+        .partition(|(_, backend)| *backend == ExecutionBackend::Sandboxed);
+
+    let sandboxed_fut =
+        futures_util::future::join_all(sandboxed.into_iter().map(|(issue, _)| dispatch_one(issue)));
+    let local_fut = async {
+        for (issue, _) in local {
+            dispatch_one(issue).await?;
+        }
+        Ok::<(), anyhow::Error>(())
+    };
+
+    let (sandboxed_results, local_result) = tokio::join!(sandboxed_fut, local_fut);
+    local_result?;
+    for result in sandboxed_results {
+        result?;
+    }
+    Ok(())
 }
 
 /// Comma-joined display names for a set of unresolved blockers, shared by
@@ -1088,5 +1178,173 @@ mod tests {
             *daemon.last_mode.lock().unwrap(),
             Some(PresenceMode::Active)
         );
+    }
+
+    fn profile(name: &str, priority: u8, execution_backend: ExecutionBackend) -> HarnessProfile {
+        use crate::harness::{AuthMode, HarnessKind};
+        HarnessProfile {
+            name: name.to_string(),
+            kind: HarnessKind::ClaudeCode,
+            cmd: "claude".to_string(),
+            args: Vec::new(),
+            auth_mode: AuthMode::Subscription,
+            priority,
+            execution_backend,
+            unsandboxed: execution_backend == ExecutionBackend::Local,
+        }
+    }
+
+    #[test]
+    fn resolve_execution_backend_picks_the_lowest_priority_profiles_backend() {
+        let profiles = vec![
+            profile("fallback", 2, ExecutionBackend::Local),
+            profile("primary", 1, ExecutionBackend::Sandboxed),
+        ];
+        assert_eq!(
+            resolve_execution_backend(&profiles),
+            ExecutionBackend::Sandboxed
+        );
+    }
+
+    #[test]
+    fn resolve_execution_backend_defaults_to_local_when_unconfigured() {
+        assert_eq!(resolve_execution_backend(&[]), ExecutionBackend::Local);
+    }
+
+    fn tagged_issue(id: &str, backend: ExecutionBackend) -> (TrackerIssue, ExecutionBackend) {
+        (
+            TrackerIssue {
+                id: id.to_string(),
+                title: id.to_string(),
+                description: None,
+                decision_state: Some(DecisionState::Approved),
+                review: ReviewMode::Auto,
+                identifier: None,
+            },
+            backend,
+        )
+    }
+
+    #[tokio::test]
+    async fn sandboxed_issues_dispatch_concurrently_with_each_other() {
+        let delay = Duration::from_millis(80);
+        let concurrent = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let max_concurrent = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let issues = vec![
+            tagged_issue("s1", ExecutionBackend::Sandboxed),
+            tagged_issue("s2", ExecutionBackend::Sandboxed),
+            tagged_issue("s3", ExecutionBackend::Sandboxed),
+        ];
+
+        let started = std::time::Instant::now();
+        dispatch_partitioned(issues, |_issue| {
+            let concurrent = concurrent.clone();
+            let max_concurrent = max_concurrent.clone();
+            async move {
+                use std::sync::atomic::Ordering;
+                let now = concurrent.fetch_add(1, Ordering::SeqCst) + 1;
+                max_concurrent.fetch_max(now, Ordering::SeqCst);
+                tokio::time::sleep(delay).await;
+                concurrent.fetch_sub(1, Ordering::SeqCst);
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+        let elapsed = started.elapsed();
+
+        assert_eq!(max_concurrent.load(std::sync::atomic::Ordering::SeqCst), 3);
+        // All three ran together — nowhere near 3x the single-dispatch delay.
+        assert!(elapsed < delay * 2, "elapsed {elapsed:?} looked sequential");
+    }
+
+    #[tokio::test]
+    async fn local_issues_stay_strictly_sequential() {
+        let delay = Duration::from_millis(40);
+        let concurrent = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let max_concurrent = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let issues = vec![
+            tagged_issue("l1", ExecutionBackend::Local),
+            tagged_issue("l2", ExecutionBackend::Local),
+            tagged_issue("l3", ExecutionBackend::Local),
+        ];
+
+        let started = std::time::Instant::now();
+        dispatch_partitioned(issues, |_issue| {
+            let concurrent = concurrent.clone();
+            let max_concurrent = max_concurrent.clone();
+            async move {
+                use std::sync::atomic::Ordering;
+                let now = concurrent.fetch_add(1, Ordering::SeqCst) + 1;
+                max_concurrent.fetch_max(now, Ordering::SeqCst);
+                tokio::time::sleep(delay).await;
+                concurrent.fetch_sub(1, Ordering::SeqCst);
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+        let elapsed = started.elapsed();
+
+        // Never more than one `Local` dispatch in flight at once.
+        assert_eq!(max_concurrent.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(
+            elapsed >= delay * 3,
+            "elapsed {elapsed:?} looked concurrent"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_sandboxed_and_a_local_issue_in_the_same_batch_do_not_interfere() {
+        // If the `Local` entry blocked the `Sandboxed` entry (or vice versa),
+        // the two would never be in flight at the same instant — check that
+        // directly (max observed concurrency) rather than inferring it from a
+        // wall-clock margin, which is prone to scheduler-timing flakes.
+        let delay = Duration::from_millis(60);
+        let concurrent = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let max_concurrent = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let issues = vec![
+            tagged_issue("local-one", ExecutionBackend::Local),
+            tagged_issue("sandboxed-one", ExecutionBackend::Sandboxed),
+        ];
+
+        dispatch_partitioned(issues, |_issue| {
+            let concurrent = concurrent.clone();
+            let max_concurrent = max_concurrent.clone();
+            async move {
+                use std::sync::atomic::Ordering;
+                let now = concurrent.fetch_add(1, Ordering::SeqCst) + 1;
+                max_concurrent.fetch_max(now, Ordering::SeqCst);
+                tokio::time::sleep(delay).await;
+                concurrent.fetch_sub(1, Ordering::SeqCst);
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+
+        // Both the `Local` and `Sandboxed` entry were in flight together at
+        // some point — neither waited for the other to finish first.
+        assert_eq!(max_concurrent.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn dispatch_partitioned_propagates_a_sandboxed_failure() {
+        let issues = vec![tagged_issue("will-fail", ExecutionBackend::Sandboxed)];
+        let result = dispatch_partitioned(issues, |_issue| async {
+            anyhow::bail!("simulated sandboxed dispatch failure")
+        })
+        .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn dispatch_partitioned_propagates_a_local_failure() {
+        let issues = vec![tagged_issue("will-fail", ExecutionBackend::Local)];
+        let result = dispatch_partitioned(issues, |_issue| async {
+            anyhow::bail!("simulated local dispatch failure")
+        })
+        .await;
+        assert!(result.is_err());
     }
 }

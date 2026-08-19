@@ -211,4 +211,39 @@ mod tests {
         let _ = std::fs::remove_dir_all(&repo_root);
         let _ = std::fs::remove_dir_all(&worktree_root);
     }
+
+    /// `daemon::dispatch_partitioned` runs multiple `Sandboxed` dispatches
+    /// concurrently against the *same* repo (see docs/wiki/architecture/
+    /// sandboxed-execution.md) — each calls `create`/`remove` on the host even
+    /// though the harness process itself is isolated. `git worktree add`
+    /// against one repo from several tasks at once is the thing that would
+    /// actually break that concurrency (ref/lock contention), so this proves
+    /// it doesn't rather than assuming it from the harness-level isolation
+    /// argument alone.
+    #[tokio::test]
+    async fn concurrent_create_against_the_same_repo_all_succeed() {
+        let repo_root =
+            std::env::temp_dir().join(format!("lucid-wt-concurrent-{}", uuid::Uuid::new_v4()));
+        let worktree_root =
+            std::env::temp_dir().join(format!("lucid-wt-concurrent-root-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&repo_root).unwrap();
+        init_repo(&repo_root);
+
+        let handles: Vec<_> = (0..5)
+            .map(|i| {
+                let repo_root = repo_root.clone();
+                let worktree_root = worktree_root.clone();
+                tokio::spawn(async move {
+                    create(&repo_root, &worktree_root, "main", &format!("ENG-{i}")).await
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            handle.await.unwrap().unwrap();
+        }
+
+        let _ = std::fs::remove_dir_all(&repo_root);
+        let _ = std::fs::remove_dir_all(&worktree_root);
+    }
 }
