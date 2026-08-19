@@ -346,7 +346,10 @@ impl Daemon {
             .query_by_decision_state(DecisionState::Approved)
             .await?;
         for issue in approved {
-            if skip_if_blocked(project.tracker.as_ref(), &issue).await? {
+            if !skip_if_blocked(project.tracker.as_ref(), &issue)
+                .await?
+                .is_empty()
+            {
                 println!("skipping {} — blocked", issue.id);
                 continue;
             }
@@ -482,23 +485,31 @@ async fn reconcile_issue(
     tracker.set_decision_state(&issue.id, state).await
 }
 
-/// Checks `issue`'s real tracker-native blockers and reports whether dispatch
-/// should skip it this tick — any blocker not yet `Done` (including one with no
-/// known decision state at all) counts as unresolved. On the first tick an issue
-/// is found blocked, attaches a `BLOCKED_NOTE_MARKER` note naming the blocker(s);
-/// on later ticks it stays blocked, `list_comments` already carries that marker
-/// so no duplicate note goes out.
-async fn skip_if_blocked(
+/// Checks `issue`'s real tracker-native blockers and returns the ones still
+/// unresolved — any blocker not yet `Done` (including one with no known decision
+/// state at all) counts as unresolved; an empty result means dispatch may
+/// proceed. On the first tick an issue is found blocked, attaches a
+/// `BLOCKED_NOTE_MARKER` note naming the blocker(s); on later ticks it stays
+/// blocked, `list_comments` already carries that marker so no duplicate note
+/// goes out.
+///
+/// Shared with `lucid task dispatch-now` (`main.rs`), which must refuse to
+/// dispatch a blocked issue the same way this tick loop does.
+///
+/// # Errors
+/// Returns an error if querying the tracker for blockers/comments, or attaching
+/// the blocked note, fails.
+pub async fn skip_if_blocked(
     tracker: &dyn TrackerAdapter,
     issue: &TrackerIssue,
-) -> anyhow::Result<bool> {
+) -> anyhow::Result<Vec<TrackerIssue>> {
     let blockers = tracker.blockers(&issue.id).await?;
-    let unresolved: Vec<&TrackerIssue> = blockers
-        .iter()
+    let unresolved: Vec<TrackerIssue> = blockers
+        .into_iter()
         .filter(|b| b.decision_state != Some(DecisionState::Done))
         .collect();
     if unresolved.is_empty() {
-        return Ok(false);
+        return Ok(unresolved);
     }
 
     let already_noted = tracker
@@ -507,15 +518,22 @@ async fn skip_if_blocked(
         .iter()
         .any(|comment| comment.contains(BLOCKED_NOTE_MARKER));
     if !already_noted {
-        let names = unresolved
-            .iter()
-            .map(|b| b.identifier.clone().unwrap_or_else(|| b.id.clone()))
-            .collect::<Vec<_>>()
-            .join(", ");
+        let names = blocker_names(&unresolved);
         let note = format!("{BLOCKED_NOTE_MARKER} waiting on: {names}");
         tracker.attach_note(&issue.id, &note).await?;
     }
-    Ok(true)
+    Ok(unresolved)
+}
+
+/// Comma-joined display names for a set of unresolved blockers, shared by
+/// `skip_if_blocked`'s note text and `lucid task dispatch-now`'s refusal error.
+#[must_use]
+pub fn blocker_names(blockers: &[TrackerIssue]) -> String {
+    blockers
+        .iter()
+        .map(|b| b.identifier.clone().unwrap_or_else(|| b.id.clone()))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 #[cfg(test)]
@@ -652,8 +670,8 @@ mod tests {
             .find(|i| i.id == issue_id)
             .unwrap();
 
-        let skipped = skip_if_blocked(&tracker, &issue).await.unwrap();
-        assert!(!skipped);
+        let unresolved = skip_if_blocked(&tracker, &issue).await.unwrap();
+        assert!(unresolved.is_empty());
         assert!(tracker.list_comments(&issue_id).await.unwrap().is_empty());
     }
 
@@ -680,14 +698,14 @@ mod tests {
             .find(|i| i.id == issue_id)
             .unwrap();
 
-        assert!(skip_if_blocked(&tracker, &issue).await.unwrap());
+        assert!(!skip_if_blocked(&tracker, &issue).await.unwrap().is_empty());
         let comments = tracker.list_comments(&issue_id).await.unwrap();
         assert_eq!(comments.len(), 1);
         assert!(comments[0].contains(BLOCKED_NOTE_MARKER));
         assert!(comments[0].contains(&blocker_id));
 
         // Second check on the same still-blocked issue must not add another note.
-        assert!(skip_if_blocked(&tracker, &issue).await.unwrap());
+        assert!(!skip_if_blocked(&tracker, &issue).await.unwrap().is_empty());
         assert_eq!(tracker.list_comments(&issue_id).await.unwrap().len(), 1);
     }
 
@@ -707,7 +725,7 @@ mod tests {
             .find(|i| i.id == issue_id)
             .unwrap();
 
-        assert!(!skip_if_blocked(&tracker, &issue).await.unwrap());
+        assert!(skip_if_blocked(&tracker, &issue).await.unwrap().is_empty());
         assert!(tracker.list_comments(&issue_id).await.unwrap().is_empty());
     }
 
