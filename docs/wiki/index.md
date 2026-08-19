@@ -23,7 +23,7 @@ An [LLM Wiki](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f)
 - [worker-completion](architecture/worker-completion.md) — per-issue git worktree isolation + `gh`-driven PR completion, `ReviewMode` (auto/human/agent) deciding who merges, and the presence-independent tick step that reconciles `NeedsReview` against the PR's own merge status
 - [human-in-the-loop](architecture/human-in-the-loop.md) — ticket ingestion via the tracker itself, a pluggable `NotificationSink`, and the end-of-turn signal + session-resume design for mid-task questions that never blocks a process
 - [sandboxed-execution](architecture/sandboxed-execution.md) — sandboxed-by-default dispatch, the `--dangerously-*`-style opt-out for running on the bare host, and why isolation is what unlocks parallel dispatch
-- [multi-project](architecture/multi-project.md) — one daemon instance managing many repos, Symphony's `WORKFLOW.md` pattern adapted as repo-owned per-project config, directory-detected `--project` CLI selection
+- [multi-project](architecture/multi-project.md) — one daemon instance managing many repos, Symphony's `WORKFLOW.md` pattern adapted as repo-owned `lucid.project.toml` per-project config (shipped — `[[projects]]` + `Config::validate_projects()`), directory-detected `--project` CLI selection (not yet wired into the daemon loop)
 - [ci-quality-tooling](architecture/ci-quality-tooling.md) — cargo-deny over cargo-audit, SHA-pinned actions, zizmor annotations over SARIF, weekly-only cargo-mutants
 - [persistence](architecture/persistence.md) — flat-file-over-database convention across override_file, audit_log, FileTracker, and DaemonState; why rusqlite was removed unused; per-file corruption tolerance
 
