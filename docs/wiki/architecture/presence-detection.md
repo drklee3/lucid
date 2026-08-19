@@ -28,6 +28,12 @@ No line is written on the very first tick (nothing to compare against yet) or wh
 
 This is the mechanism that satisfies the "log every mode transition" requirement above — presence-gated autonomy is trust-critical, and the audit log is what makes a transition inspectable after the fact instead of only visible at the instant it happens.
 
+## What presence gates
+
+Presence gates `daemon::maybe_wake_pm` only — the PM proactively investigating the codebase and filing *new* proposals with no human having looked at them yet. It does not gate `daemon::dispatch_approved_issues`: an `Approved` issue already has an explicit human decision behind it (a person approved it in Linear, or via `lucid task approve`), so running it isn't the same class of unsupervised action a PM wake is. `dispatch_approved_issues` and `reconcile_needs_review` (closing the loop on a PR a human already merged/closed on GitHub) both run on every tick regardless of presence mode — see `daemon::tick`'s doc comment. `lucid task dispatch-now` (`docs/CLI.md`) is accordingly just a latency shortcut over the tick interval, not a presence bypass — there's no gate left there to bypass.
+
+Narrower than the system's original design, which gated all `Autonomous`-only tick work (dispatch included) behind presence. The risk presence-gating exists to guard against is the PM generating and acting on new work while unsupervised; an already-approved ticket already cleared that bar via the approval step itself.
+
 ## Why `xprintidle` is out
 
 X11-only, breaks under Wayland. `systemd-logind` over D-Bus is compositor-agnostic (the mechanism `dbus-idle` wraps).

@@ -119,9 +119,10 @@ pub enum TaskCommand {
         #[arg(long)]
         config: Option<PathBuf>,
     },
-    /// Dispatch one already-`Approved` issue right now, bypassing the tick
-    /// interval and presence gate — the same dispatch path the daemon's regular
-    /// tick uses, just triggered on demand instead of on a timer.
+    /// Dispatch one already-`Approved` issue right now instead of waiting for the
+    /// next tick — the same dispatch path the daemon's regular tick uses, just
+    /// triggered on demand instead of on a timer. Approved dispatch isn't
+    /// presence-gated, so this only shortcuts the tick interval, not a gate.
     DispatchNow {
         issue_id: String,
         #[arg(long)]
