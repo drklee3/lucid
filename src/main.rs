@@ -5,12 +5,12 @@
 
 use clap::Parser;
 use lucid::cli::{self, Cli, Command, ConfigCommand, PmCommand, PresenceCommand, TaskCommand};
-use lucid::config::{Config, default_override_path};
+use lucid::config::{Config, ProjectConfig, ProjectPointer, default_override_path};
 use lucid::daemon::Daemon;
 use lucid::presence::override_file::{OverrideFile, OverrideMode};
 use lucid::presence::{self, PresenceMode, PresenceSourceList};
 use lucid::tracker::{DecisionState, EffortEstimate, Proposal, ReviewMode};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 #[tokio::main]
@@ -45,21 +45,28 @@ async fn main() -> anyhow::Result<()> {
             ConfigCommand::Validate { config } => config_validate(config).await,
             ConfigCommand::Show { config, format } => config_show(config, format).await,
         },
-        Command::Task { command } => match command {
+        Command::Task { command } => match *command {
             TaskCommand::List {
                 state,
                 format,
                 config,
-            } => task_list(state, format, config).await,
-            TaskCommand::Approve { issue_id, config } => {
-                task_set_decision(&issue_id, DecisionState::Approved, config).await
-            }
-            TaskCommand::Reject { issue_id, config } => {
-                task_set_decision(&issue_id, DecisionState::Rejected, config).await
-            }
-            TaskCommand::DispatchNow { issue_id, config } => {
-                task_dispatch_now(&issue_id, config).await
-            }
+                project,
+            } => task_list(state, format, config, project).await,
+            TaskCommand::Approve {
+                issue_id,
+                config,
+                project,
+            } => task_set_decision(&issue_id, DecisionState::Approved, config, project).await,
+            TaskCommand::Reject {
+                issue_id,
+                config,
+                project,
+            } => task_set_decision(&issue_id, DecisionState::Rejected, config, project).await,
+            TaskCommand::DispatchNow {
+                issue_id,
+                config,
+                project,
+            } => task_dispatch_now(&issue_id, config, project).await,
             TaskCommand::Create {
                 title,
                 summary,
@@ -72,6 +79,7 @@ async fn main() -> anyhow::Result<()> {
                 review,
                 verify_cmd,
                 config,
+                project,
             } => {
                 task_create(
                     title,
@@ -85,6 +93,7 @@ async fn main() -> anyhow::Result<()> {
                     review,
                     verify_cmd,
                     config,
+                    project,
                 )
                 .await
             }
@@ -109,6 +118,105 @@ fn resolve_config_path(explicit: Option<PathBuf>) -> PathBuf {
         return PathBuf::from(home).join(".config/lucid/config.toml");
     }
     local
+}
+
+/// A `[[projects]]` entry resolved against `--project`/cwd, plus its own
+/// checked-in `lucid.project.toml`.
+#[derive(Debug)]
+struct ResolvedProject {
+    name: String,
+    path: PathBuf,
+    project_config: ProjectConfig,
+}
+
+/// The name a project is addressed by on the CLI — the final component of its
+/// pointer `path`, since `[[projects]]` entries don't carry a separate name
+/// field (see docs/wiki/architecture/multi-project.md).
+fn project_name(pointer: &ProjectPointer) -> String {
+    pointer.path.file_name().map_or_else(
+        || pointer.path.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    )
+}
+
+/// Resolves which configured project a `task` subcommand targets — directory
+/// detection by default, `--project <name>` to override. Never guesses: a cwd
+/// matching zero or more than one configured project is a hard error listing
+/// the configured names, and no state is persisted anywhere (recomputed fresh
+/// every call). Repos with no `[[projects]]` configured keep today's
+/// single-project behavior unchanged — `None` means "use `config.daemon.*`
+/// directly", not "no project found".
+///
+/// # Errors
+/// Returns an error if `--project` names an unconfigured project, if `cwd`
+/// matches no configured project, if `cwd` matches more than one, or if a
+/// matched project's own `lucid.project.toml` fails to load.
+fn resolve_project(
+    config: &Config,
+    project_flag: Option<&str>,
+    cwd: &Path,
+) -> anyhow::Result<Option<ResolvedProject>> {
+    if config.projects.is_empty() {
+        if let Some(name) = project_flag {
+            anyhow::bail!(
+                "--project {name} was given, but no [[projects]] are configured in this lucid.toml"
+            );
+        }
+        return Ok(None);
+    }
+
+    let names = || {
+        config
+            .projects
+            .iter()
+            .map(project_name)
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+
+    let pointer = if let Some(name) = project_flag {
+        config
+            .projects
+            .iter()
+            .find(|p| project_name(p) == name)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "no configured project named `{name}` — configured: {}",
+                    names()
+                )
+            })?
+    } else {
+        let cwd_canon = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+        let matches: Vec<&ProjectPointer> = config
+            .projects
+            .iter()
+            .filter(|p| {
+                let path_canon = p.path.canonicalize().unwrap_or_else(|_| p.path.clone());
+                cwd_canon.starts_with(&path_canon)
+            })
+            .collect();
+
+        match matches.as_slice() {
+            [] => anyhow::bail!(
+                "current directory doesn't match any configured project's workdir — pass --project <name> to select one; configured: {}",
+                names()
+            ),
+            [single] => *single,
+            _ => anyhow::bail!(
+                "current directory matches more than one configured project — pass --project <name> to disambiguate; configured: {}",
+                names()
+            ),
+        }
+    };
+
+    let project_config = ProjectConfig::load(&pointer.path)
+        .map_err(|e| anyhow::anyhow!("project `{}`: {e}", project_name(pointer)))?;
+
+    Ok(Some(ResolvedProject {
+        name: project_name(pointer),
+        path: pointer.path.clone(),
+        project_config,
+    }))
 }
 
 fn override_file_for(config: &Config) -> OverrideFile {
@@ -325,8 +433,10 @@ async fn task_create(
     review: cli::CliReviewMode,
     verify_cmd: Option<String>,
     config: Option<PathBuf>,
+    project: Option<String>,
 ) -> anyhow::Result<()> {
     let config = Config::load(&resolve_config_path(config))?;
+    resolve_project(&config, project.as_deref(), &std::env::current_dir()?)?;
     let tracker = lucid::tracker::build(&config.tracker)?;
 
     let review = match review {
@@ -361,8 +471,10 @@ async fn task_list(
     state: cli::TaskState,
     format: cli::OutputFormat,
     config: Option<PathBuf>,
+    project: Option<String>,
 ) -> anyhow::Result<()> {
     let config = Config::load(&resolve_config_path(config))?;
+    resolve_project(&config, project.as_deref(), &std::env::current_dir()?)?;
     let tracker = lucid::tracker::build(&config.tracker)?;
     let decision = task_state_to_decision(state);
     let issues = tracker.query_by_decision_state(decision).await?;
@@ -397,8 +509,10 @@ async fn task_set_decision(
     issue_id: &str,
     state: DecisionState,
     config: Option<PathBuf>,
+    project: Option<String>,
 ) -> anyhow::Result<()> {
     let config = Config::load(&resolve_config_path(config))?;
+    resolve_project(&config, project.as_deref(), &std::env::current_dir()?)?;
     let tracker = lucid::tracker::build(&config.tracker)?;
     tracker.set_decision_state(issue_id, state).await?;
     println!("{issue_id} -> {state:?}");
@@ -409,9 +523,32 @@ async fn task_set_decision(
 /// this issue — on demand instead of on the next tick. Requires the issue already
 /// be `Approved` in the tracker: this triggers *when* approved work runs, it never
 /// decides *whether* it's allowed to.
-async fn task_dispatch_now(issue_id: &str, config: Option<PathBuf>) -> anyhow::Result<()> {
+async fn task_dispatch_now(
+    issue_id: &str,
+    config: Option<PathBuf>,
+    project: Option<String>,
+) -> anyhow::Result<()> {
     let config = Config::load(&resolve_config_path(config))?;
+    let resolved = resolve_project(&config, project.as_deref(), &std::env::current_dir()?)?;
     let tracker = lucid::tracker::build(&config.tracker)?;
+
+    let (workdir, base_branch, verify_cmd) = resolved.as_ref().map_or(
+        (
+            config.daemon.workdir.clone(),
+            config.daemon.base_branch.clone(),
+            config.daemon.verify_cmd.clone(),
+        ),
+        |p| {
+            (
+                p.path.clone(),
+                p.project_config.base_branch.clone(),
+                p.project_config
+                    .verify_cmd
+                    .clone()
+                    .or_else(|| config.daemon.verify_cmd.clone()),
+            )
+        },
+    );
 
     let approved = tracker
         .query_by_decision_state(DecisionState::Approved)
@@ -427,17 +564,152 @@ async fn task_dispatch_now(issue_id: &str, config: Option<PathBuf>) -> anyhow::R
         &issue,
         &config.harness_profiles,
         &config.observability,
-        &config.daemon.workdir,
+        &workdir,
         &config.daemon.worktree_root,
-        &config.daemon.base_branch,
+        &base_branch,
         Duration::from_secs(config.daemon.stall_timeout_secs),
-        config.daemon.verify_cmd.as_deref(),
+        verify_cmd.as_deref(),
     )
     .await?;
 
-    println!("{issue_id}: {:?}", run.phase);
+    if let Some(p) = &resolved {
+        println!("[{}] {issue_id}: {:?}", p.name, run.phase);
+    } else {
+        println!("{issue_id}: {:?}", run.phase);
+    }
     if let Some(err) = &run.last_error {
         println!("error: {err}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod project_resolution_tests {
+    use super::{Config, resolve_project};
+    use lucid::config::PROJECT_CONFIG_FILENAME;
+    use std::path::PathBuf;
+
+    fn write_project(base_branch: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("lucid-cli-project-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(PROJECT_CONFIG_FILENAME),
+            format!(r#"base_branch = "{base_branch}""#),
+        )
+        .unwrap();
+        dir
+    }
+
+    fn write_config(project_paths: &[&std::path::Path]) -> Config {
+        let mut projects_toml = String::new();
+        for p in project_paths {
+            use std::fmt::Write;
+            let _ = writeln!(projects_toml, "[[projects]]\npath = \"{}\"", p.display());
+        }
+        let toml = format!(
+            r#"
+            [[harness_profiles]]
+            name = "claude-subscription"
+            kind = "ClaudeCode"
+            cmd = "claude"
+            args = ["-p"]
+            auth_mode = "Subscription"
+            priority = 1
+
+            [tracker]
+            backend = "file"
+            file_path = "/tmp/lucid-cli-test-tracker.json"
+
+            [presence]
+            idle_threshold_minutes = 20
+            proposal_cap_per_wake = 3
+
+            [observability]
+            otlp_endpoint = "http://localhost:4317"
+            trace_ui_base_url = "http://localhost:6006"
+
+            {projects_toml}
+        "#
+        );
+        let path = std::env::temp_dir().join(format!(
+            "lucid-cli-config-test-{}.toml",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::write(&path, toml).unwrap();
+        let config = Config::load(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        config
+    }
+
+    #[test]
+    fn no_projects_configured_resolves_to_none_regardless_of_cwd() {
+        let config = write_config(&[]);
+        let resolved = resolve_project(&config, None, &std::env::temp_dir()).unwrap();
+        assert!(resolved.is_none());
+    }
+
+    #[test]
+    fn directory_detection_resolves_the_right_project() {
+        let project_a = write_project("main");
+        let project_b = write_project("trunk");
+        let config = write_config(&[&project_a, &project_b]);
+
+        let cwd = project_a.join("src");
+        let resolved = resolve_project(&config, None, &cwd).unwrap().unwrap();
+        assert_eq!(resolved.path, project_a);
+        assert_eq!(resolved.project_config.base_branch, "main");
+
+        let _ = std::fs::remove_dir_all(&project_a);
+        let _ = std::fs::remove_dir_all(&project_b);
+    }
+
+    #[test]
+    fn unmatched_cwd_produces_a_clear_error_listing_configured_projects() {
+        let project_a = write_project("main");
+        let project_b = write_project("trunk");
+        let config = write_config(&[&project_a, &project_b]);
+
+        let unrelated_cwd =
+            std::env::temp_dir().join(format!("lucid-cli-unrelated-{}", uuid::Uuid::new_v4()));
+        let err = resolve_project(&config, None, &unrelated_cwd).unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("doesn't match any configured project"));
+        assert!(message.contains(&super::project_name(&config.projects[0])));
+        assert!(message.contains(&super::project_name(&config.projects[1])));
+
+        let _ = std::fs::remove_dir_all(&project_a);
+        let _ = std::fs::remove_dir_all(&project_b);
+    }
+
+    #[test]
+    fn unknown_project_flag_produces_a_clear_error() {
+        let project_a = write_project("main");
+        let config = write_config(&[&project_a]);
+
+        let err =
+            resolve_project(&config, Some("does-not-exist"), &std::env::temp_dir()).unwrap_err();
+        assert!(err.to_string().contains("no configured project named"));
+
+        let _ = std::fs::remove_dir_all(&project_a);
+    }
+
+    #[test]
+    fn explicit_project_flag_overrides_directory_detection() {
+        let project_a = write_project("main");
+        let project_b = write_project("trunk");
+        let config = write_config(&[&project_a, &project_b]);
+        let project_b_name = super::project_name(&config.projects[1]);
+
+        // cwd sits inside project_a, but --project explicitly picks project_b.
+        let cwd = project_a.join("src");
+        let resolved = resolve_project(&config, Some(&project_b_name), &cwd)
+            .unwrap()
+            .unwrap();
+        assert_eq!(resolved.path, project_b);
+        assert_eq!(resolved.project_config.base_branch, "trunk");
+
+        let _ = std::fs::remove_dir_all(&project_a);
+        let _ = std::fs::remove_dir_all(&project_b);
+    }
 }

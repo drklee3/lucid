@@ -60,7 +60,7 @@ pub enum Command {
     /// docs/wiki/architecture/worker-completion.md.
     Task {
         #[command(subcommand)]
-        command: TaskCommand,
+        command: Box<TaskCommand>,
     },
 }
 
@@ -74,12 +74,20 @@ pub enum TaskCommand {
         format: OutputFormat,
         #[arg(long)]
         config: Option<PathBuf>,
+        /// Target project by name — defaults to whichever configured project's
+        /// workdir contains the current directory
+        #[arg(long)]
+        project: Option<String>,
     },
     /// Approve an issue for dispatch
     Approve {
         issue_id: String,
         #[arg(long)]
         config: Option<PathBuf>,
+        /// Target project by name — defaults to whichever configured project's
+        /// workdir contains the current directory
+        #[arg(long)]
+        project: Option<String>,
     },
     /// File a new proposal directly, bypassing the PM gap-detection wake cycle
     Create {
@@ -112,12 +120,20 @@ pub enum TaskCommand {
         verify_cmd: Option<String>,
         #[arg(long)]
         config: Option<PathBuf>,
+        /// Target project by name — defaults to whichever configured project's
+        /// workdir contains the current directory
+        #[arg(long)]
+        project: Option<String>,
     },
     /// Reject an issue
     Reject {
         issue_id: String,
         #[arg(long)]
         config: Option<PathBuf>,
+        /// Target project by name — defaults to whichever configured project's
+        /// workdir contains the current directory
+        #[arg(long)]
+        project: Option<String>,
     },
     /// Dispatch one already-`Approved` issue right now instead of waiting for the
     /// next tick — the same dispatch path the daemon's regular tick uses, just
@@ -127,6 +143,10 @@ pub enum TaskCommand {
         issue_id: String,
         #[arg(long)]
         config: Option<PathBuf>,
+        /// Target project by name — defaults to whichever configured project's
+        /// workdir contains the current directory
+        #[arg(long)]
+        project: Option<String>,
     },
 }
 
