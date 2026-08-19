@@ -888,6 +888,160 @@ mod tests {
         }
     }
 
+    fn scratch_tracker_path(unique: &str, name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "lucid-daemon-local-id-collision-{unique}-{name}-{}.json",
+            uuid::Uuid::new_v4()
+        ))
+    }
+
+    fn sample_run(issue_id: &str, phase: crate::state::WorkerPhase) -> WorkerRun {
+        WorkerRun {
+            issue_id: issue_id.to_string(),
+            claim: crate::state::ClaimState::Unclaimed,
+            phase,
+            session_id: None,
+            dispatch_id: None,
+            retries: 0,
+            last_event_at: Utc::now(),
+            last_error: None,
+        }
+    }
+
+    /// Same shape as `test_daemon_multi`, but taking already-built
+    /// `ProjectRuntime`s (rather than building one `MockTracker`-backed one per
+    /// tracker) so a caller can wire up real `FileTracker`s with pre-seeded
+    /// `runs`.
+    fn test_daemon_with_projects(
+        projects: Vec<ProjectRuntime>,
+        state_path: PathBuf,
+        unique: &str,
+    ) -> Daemon {
+        let override_path =
+            std::env::temp_dir().join(format!("lucid-daemon-local-id-collision-override-{unique}"));
+        let override_file = OverrideFile::new(override_path.clone());
+        override_file
+            .write(presence::override_file::OverrideMode::Active)
+            .unwrap();
+
+        Daemon {
+            profiles: Vec::new(),
+            observability: ObservabilityConfig {
+                otlp_endpoint: "http://localhost:4317".to_string(),
+                log_prompts: false,
+                trace_ui_base_url: "http://localhost:6006".to_string(),
+                trace_ui_project_id: None,
+            },
+            presence_sources: PresenceSourceList::new(Vec::new()),
+            presence_cfg: PresenceConfig {
+                idle_threshold_minutes: 20,
+                proposal_cap_per_wake: 3,
+                override_path: Some(override_path),
+            },
+            audit_log: AuditLog::new(
+                std::env::temp_dir()
+                    .join(format!("lucid-daemon-local-id-collision-audit-{unique}")),
+            ),
+            override_file,
+            worktree_root: std::env::temp_dir(),
+            tick_interval: Duration::from_secs(60),
+            stall_timeout: Duration::from_secs(5),
+            pm_wake_interval: Duration::from_secs(3600),
+            last_mode: Mutex::new(None),
+            state_path,
+            projects,
+        }
+    }
+
+    /// `FileTracker`'s `LOCAL-{n}` id is a counter local to one JSON file, so two
+    /// separate `FileTracker`-backed projects independently produce the same
+    /// ids (`LOCAL-1`, `LOCAL-2`, ...). Exercises this against the real
+    /// `Daemon`/`ProjectRuntime`/`save_state` path (not just `DaemonState`
+    /// directly, which `state::tests::two_projects_state_does_not_collide`
+    /// already covers) to confirm the project-keyed `runs` map keeps
+    /// same-numbered issues from different projects distinct end to end.
+    #[tokio::test]
+    async fn same_numbered_local_ids_across_projects_do_not_collide_in_daemon_state() {
+        let unique = "collision-test";
+        let tracker_a =
+            crate::tracker::file::FileTracker::open(scratch_tracker_path(unique, "a")).unwrap();
+        let tracker_b =
+            crate::tracker::file::FileTracker::open(scratch_tracker_path(unique, "b")).unwrap();
+
+        let id_a = tracker_a
+            .create_proposal(&blocked_proposal("Project A's first issue"))
+            .await
+            .unwrap();
+        let id_b = tracker_b
+            .create_proposal(&blocked_proposal("Project B's first issue"))
+            .await
+            .unwrap();
+        // Both trackers' counters start from zero independently, so the two
+        // projects really do produce the same id — this is the collision this
+        // test is meant to catch if project-scoping ever regresses.
+        assert_eq!(id_a, "LOCAL-1");
+        assert_eq!(id_b, "LOCAL-1");
+
+        let projects = vec![
+            ProjectRuntime {
+                project_id: "project-a".to_string(),
+                tracker: Box::new(tracker_a),
+                workdir: std::env::temp_dir(),
+                base_branch: "main".to_string(),
+                verify_cmd: None,
+                runs: Mutex::new(HashMap::from([(
+                    id_a.clone(),
+                    sample_run(&id_a, crate::state::WorkerPhase::Succeeded),
+                )])),
+                last_pm_wake: Mutex::new(None),
+            },
+            ProjectRuntime {
+                project_id: "project-b".to_string(),
+                tracker: Box::new(tracker_b),
+                workdir: std::env::temp_dir(),
+                base_branch: "main".to_string(),
+                verify_cmd: None,
+                runs: Mutex::new(HashMap::from([(
+                    id_b.clone(),
+                    sample_run(&id_b, crate::state::WorkerPhase::Failed),
+                )])),
+                last_pm_wake: Mutex::new(None),
+            },
+        ];
+
+        let state_path = std::env::temp_dir().join(format!(
+            "lucid-daemon-local-id-collision-state-{unique}.json"
+        ));
+        let daemon = test_daemon_with_projects(projects, state_path.clone(), unique);
+
+        // Sanity check: the in-memory snapshot must already carry both LOCAL-1
+        // runs distinctly, with their own (different) phases, before state is
+        // even persisted.
+        let snapshot = daemon.runs_snapshot();
+        assert_eq!(snapshot.len(), 2);
+        assert!(snapshot.iter().any(|r| r.issue_id == "LOCAL-1"
+            && r.phase == crate::state::WorkerPhase::Succeeded));
+        assert!(
+            snapshot
+                .iter()
+                .any(|r| r.issue_id == "LOCAL-1" && r.phase == crate::state::WorkerPhase::Failed)
+        );
+
+        daemon.save_state().unwrap();
+        let loaded = DaemonState::load(&state_path);
+        assert_eq!(loaded.runs.len(), 2);
+        assert_eq!(
+            loaded.runs["project-a"]["LOCAL-1"].phase,
+            crate::state::WorkerPhase::Succeeded
+        );
+        assert_eq!(
+            loaded.runs["project-b"]["LOCAL-1"].phase,
+            crate::state::WorkerPhase::Failed
+        );
+
+        let _ = std::fs::remove_file(&state_path);
+    }
+
     #[tokio::test]
     async fn one_projects_dispatch_failure_does_not_block_the_other_projects_tick_work() {
         let failing_tracker = MockTracker {
