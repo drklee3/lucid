@@ -246,7 +246,7 @@ async fn start(foreground: bool, config: Option<PathBuf>) -> anyhow::Result<()> 
     }
     let config = Config::load(&resolve_config_path(config))?;
     let tracker = lucid::tracker::build(&config.tracker)?;
-    let daemon = Daemon::new(tracker, default_presence_sources(), &config);
+    let daemon = Daemon::new(tracker, default_presence_sources(), &config)?;
     daemon.run_foreground().await
 }
 

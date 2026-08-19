@@ -71,7 +71,7 @@ impl ProjectConfig {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrackerConfig {
     /// `"file"` (local JSON, no credentials — see `tracker::file::FileTracker`) or
     /// `"linear"` (real Linear GraphQL — see `tracker::linear::LinearAdapter`).
