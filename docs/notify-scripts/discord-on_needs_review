@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Posts a Discord message when a dispatch needs human review. See
+# docs/notify-scripts/README.md for the payload shape and install steps.
+#
+# Requires: curl, jq. Set DISCORD_WEBHOOK_URL before starting lucid, or hardcode
+# it below.
+set -euo pipefail
+
+payload=$(cat)
+
+title=$(jq -r '.issue.title' <<<"$payload")
+identifier=$(jq -r '.issue.identifier // .issue.id' <<<"$payload")
+pr_url=$(jq -r '.pr_url // empty' <<<"$payload")
+
+message="**Needs review** — \`$identifier\`: $title"
+if [[ -n "$pr_url" ]]; then
+  message="$message — $pr_url"
+fi
+
+curl -fsS -X POST "$DISCORD_WEBHOOK_URL" \
+  -H 'Content-Type: application/json' \
+  -d "$(jq -n --arg content "$message" '{content: $content}')" \
+  > /dev/null
