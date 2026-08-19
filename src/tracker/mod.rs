@@ -188,6 +188,13 @@ pub trait TrackerAdapter: Send + Sync {
     /// human comments; see docs/wiki/architecture/human-in-the-loop.md for why
     /// callers must not filter them out.
     async fn list_comments(&self, issue_id: &str) -> anyhow::Result<Vec<String>>;
+
+    /// The tracker-native issues currently blocking `issue_id` — for
+    /// `LinearAdapter`, Linear's own `blocks`/`blockedBy` issue-relations, not a
+    /// lucid-side concept (see docs/wiki/architecture/dependency-aware-dispatch.md).
+    /// Each returned issue carries its own `decision_state`, so a caller can check
+    /// whether every blocker is `Done` without a second per-blocker round trip.
+    async fn blockers(&self, issue_id: &str) -> anyhow::Result<Vec<TrackerIssue>>;
 }
 
 /// Builds the configured `TrackerAdapter` — the one place `backend` strings get

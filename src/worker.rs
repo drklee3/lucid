@@ -745,6 +745,9 @@ mod tests {
         async fn list_comments(&self, _issue_id: &str) -> anyhow::Result<Vec<String>> {
             Ok(Vec::new())
         }
+        async fn blockers(&self, _issue_id: &str) -> anyhow::Result<Vec<TrackerIssue>> {
+            Ok(Vec::new())
+        }
     }
 
     fn observability() -> ObservabilityConfig {

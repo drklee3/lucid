@@ -516,6 +516,58 @@ impl TrackerAdapter for LinearAdapter {
         collected.reverse();
         Ok(collected)
     }
+
+    /// Linear models a blocking relationship as an `IssueRelation` of type
+    /// `"blocks"` authored from the blocker's side (`blocker.relations` contains
+    /// `{ type: "blocks", relatedIssue: blocked }`). Reading it from the blocked
+    /// issue's side means looking at `inverseRelations` instead — the relations
+    /// where this issue is the `relatedIssue` target of someone else's `"blocks"`
+    /// relation. This is the same relation Linear's `save_issue` `blockedBy`
+    /// field creates, just read back from the other end.
+    async fn blockers(&self, issue_id: &str) -> anyhow::Result<Vec<TrackerIssue>> {
+        const QUERY: &str = r"
+            query IssueBlockers($id: String!, $first: Int!, $after: String) {
+              issue(id: $id) {
+                inverseRelations(first: $first, after: $after) {
+                  nodes {
+                    type
+                    issue { id identifier title description state { name } archivedAt labels(first: 100) { nodes { id name } } }
+                  }
+                  pageInfo { hasNextPage endCursor }
+                }
+              }
+            }
+        ";
+
+        let mut collected = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let data: IssueBlockersData = self
+                .graphql(
+                    QUERY,
+                    json!({ "id": issue_id, "first": PAGE_SIZE, "after": cursor }),
+                )
+                .await?;
+
+            let relations = data.issue.inverse_relations;
+            collected.extend(
+                relations
+                    .nodes
+                    .into_iter()
+                    .filter(|node| node.relation_type == "blocks")
+                    .map(|node| node.issue.into_tracker_issue()),
+            );
+
+            if !relations.page_info.has_next_page {
+                break;
+            }
+            cursor = relations.page_info.end_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        Ok(collected)
+    }
 }
 
 const TEAM_ID_QUERY: &str = r"
@@ -738,6 +790,31 @@ struct IssueCommentsData {
     issue: IssueComments,
 }
 
+#[derive(Deserialize)]
+struct IssueRelationNode {
+    #[serde(rename = "type")]
+    relation_type: String,
+    issue: IssueNode,
+}
+
+#[derive(Deserialize)]
+struct IssueRelationConnection {
+    nodes: Vec<IssueRelationNode>,
+    #[serde(rename = "pageInfo")]
+    page_info: PageInfo,
+}
+
+#[derive(Deserialize)]
+struct IssueInverseRelations {
+    #[serde(rename = "inverseRelations")]
+    inverse_relations: IssueRelationConnection,
+}
+
+#[derive(Deserialize)]
+struct IssueBlockersData {
+    issue: IssueInverseRelations,
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::EffortEstimate;
@@ -941,6 +1018,41 @@ mod tests {
                 "unknown: no author on this one".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn inverse_relations_filter_to_blocks_type_only() {
+        let data: IssueBlockersData = serde_json::from_value(json!({
+            "issue": {
+                "inverseRelations": {
+                    "nodes": [
+                        {
+                            "type": "blocks",
+                            "issue": { "id": "blocker-1", "title": "Ship the sandbox backend", "state": { "name": "Approved" }, "labels": { "nodes": [] } }
+                        },
+                        {
+                            "type": "duplicate",
+                            "issue": { "id": "dup-1", "title": "Not a real blocker", "labels": { "nodes": [] } }
+                        }
+                    ],
+                    "pageInfo": { "hasNextPage": false, "endCursor": null }
+                }
+            }
+        }))
+        .expect("issue blockers data");
+
+        let blockers: Vec<_> = data
+            .issue
+            .inverse_relations
+            .nodes
+            .into_iter()
+            .filter(|node| node.relation_type == "blocks")
+            .map(|node| node.issue.into_tracker_issue())
+            .collect();
+
+        assert_eq!(blockers.len(), 1);
+        assert_eq!(blockers[0].id, "blocker-1");
+        assert_eq!(blockers[0].decision_state, Some(DecisionState::Approved));
     }
 
     #[test]
