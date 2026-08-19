@@ -559,6 +559,14 @@ async fn task_dispatch_now(
         )
     })?;
 
+    let unresolved = lucid::daemon::skip_if_blocked(tracker.as_ref(), &issue).await?;
+    if !unresolved.is_empty() {
+        anyhow::bail!(
+            "`{issue_id}` is blocked on unresolved blocker(s): {}",
+            lucid::daemon::blocker_names(&unresolved)
+        );
+    }
+
     let run = lucid::worker::dispatch_and_finalize(
         tracker.as_ref(),
         &issue,
@@ -711,5 +719,95 @@ mod project_resolution_tests {
 
         let _ = std::fs::remove_dir_all(&project_a);
         let _ = std::fs::remove_dir_all(&project_b);
+    }
+}
+
+#[cfg(test)]
+mod dispatch_now_tests {
+    use super::task_dispatch_now;
+    use lucid::tracker::file::FileTracker;
+    use lucid::tracker::{DecisionState, EffortEstimate, Proposal, ReviewMode, TrackerAdapter};
+
+    fn blocked_proposal(title: &str) -> Proposal {
+        Proposal {
+            title: title.to_string(),
+            summary: "summary".to_string(),
+            why_now: vec!["because".to_string()],
+            effort_estimate: EffortEstimate::Small,
+            risk_note: "none".to_string(),
+            task_type: "feature".to_string(),
+            target_paths: vec![],
+            acceptance_criteria: vec![],
+            research_ref: None,
+            review: ReviewMode::Auto,
+            verify_cmd: None,
+        }
+    }
+
+    fn write_config(tracker_path: &std::path::Path) -> std::path::PathBuf {
+        let toml = format!(
+            r#"
+            [[harness_profiles]]
+            name = "claude-subscription"
+            kind = "ClaudeCode"
+            cmd = "claude"
+            args = ["-p"]
+            auth_mode = "Subscription"
+            priority = 1
+
+            [tracker]
+            backend = "file"
+            file_path = "{}"
+
+            [presence]
+            idle_threshold_minutes = 20
+            proposal_cap_per_wake = 3
+
+            [observability]
+            otlp_endpoint = "http://localhost:4317"
+            trace_ui_base_url = "http://localhost:6006"
+        "#,
+            tracker_path.display()
+        );
+        let path = std::env::temp_dir().join(format!(
+            "lucid-cli-dispatch-now-config-{}.toml",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::write(&path, toml).unwrap();
+        path
+    }
+
+    #[tokio::test]
+    async fn dispatch_now_on_a_blocked_issue_errors_instead_of_dispatching() {
+        let tracker_path = std::env::temp_dir().join(format!(
+            "lucid-cli-dispatch-now-tracker-{}.json",
+            uuid::Uuid::new_v4()
+        ));
+        let tracker = FileTracker::open(&tracker_path).unwrap();
+        let blocker_id = tracker
+            .create_proposal(&blocked_proposal("Blocker"))
+            .await
+            .unwrap();
+        let issue_id = tracker
+            .create_proposal(&blocked_proposal("Blocked issue"))
+            .await
+            .unwrap();
+        tracker
+            .set_blockers(&issue_id, vec![blocker_id.clone()])
+            .unwrap();
+        tracker
+            .set_decision_state(&issue_id, DecisionState::Approved)
+            .await
+            .unwrap();
+
+        let config_path = write_config(&tracker_path);
+        let err = task_dispatch_now(&issue_id, Some(config_path.clone()), None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("blocked"));
+        assert!(err.to_string().contains(&blocker_id));
+
+        let _ = std::fs::remove_file(&tracker_path);
+        let _ = std::fs::remove_file(&config_path);
     }
 }

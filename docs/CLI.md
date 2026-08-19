@@ -192,15 +192,18 @@ flag to change `ReviewMode` after creation; that's set once at proposal-filing t
 currently updatable from the CLI afterward.
 
 `lucid task dispatch-now <issue-id>` runs the *exact* dispatch path the daemon's
-regular tick would run for that issue (`worker::dispatch_and_finalize`, shared by
-both callers) — it changes **when** approved work runs (now, instead of waiting up
-to `tick_interval_secs` for the next tick), never **whether** it's allowed to.
-Dispatching an `Approved` issue is no longer presence-gated at all (see
+regular tick would run for that issue: the same tracker-native blocker check
+(`daemon::skip_if_blocked`) the tick loop applies, then `worker::dispatch_and_finalize`
+(shared by both callers) — it changes **when** approved work runs (now, instead of
+waiting up to `tick_interval_secs` for the next tick), never **whether** it's allowed
+to. Dispatching an `Approved` issue is no longer presence-gated at all (see
 `docs/wiki/architecture/presence-detection.md` § What presence gates), so
 `dispatch-now` is purely a latency shortcut, not a presence bypass. It requires
 the issue already be in the `Approved` state in the tracker and errors out
-otherwise, pointing at `lucid task approve` — it is not an independent trigger
-mechanism.
+otherwise, pointing at `lucid task approve`; it likewise errors out, naming the
+unresolved blocker(s), if the issue is still blocked on another tracker-native
+issue (see `docs/wiki/architecture/worker-completion.md` § Triggering this on
+demand) — it is not an independent trigger mechanism.
 
 ---
 
