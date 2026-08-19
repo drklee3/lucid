@@ -230,8 +230,8 @@ mod tests {
             args: vec!["-c".to_string(), format!("echo '{event}'")],
             auth_mode: AuthMode::Subscription,
             priority: 1,
-            execution_backend: ExecutionBackend::Sandboxed,
-            unsandboxed: false,
+            execution_backend: ExecutionBackend::Local,
+            unsandboxed: true,
         }
     }
 

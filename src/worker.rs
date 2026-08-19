@@ -874,8 +874,8 @@ mod tests {
             args: vec![],
             auth_mode: AuthMode::Subscription,
             priority: 1,
-            execution_backend: ExecutionBackend::Sandboxed,
-            unsandboxed: false,
+            execution_backend: ExecutionBackend::Local,
+            unsandboxed: true,
         }];
 
         let run = run_dispatch(
@@ -917,8 +917,8 @@ mod tests {
             args: vec![],
             auth_mode: AuthMode::Subscription,
             priority: 1,
-            execution_backend: ExecutionBackend::Sandboxed,
-            unsandboxed: false,
+            execution_backend: ExecutionBackend::Local,
+            unsandboxed: true,
         }];
 
         let run = run_dispatch(
@@ -996,8 +996,8 @@ mod tests {
             ],
             auth_mode: AuthMode::Subscription,
             priority: 1,
-            execution_backend: ExecutionBackend::Sandboxed,
-            unsandboxed: false,
+            execution_backend: ExecutionBackend::Local,
+            unsandboxed: true,
         }];
 
         let run = run_dispatch(
@@ -1051,8 +1051,8 @@ mod tests {
             ],
             auth_mode: AuthMode::Subscription,
             priority: 1,
-            execution_backend: ExecutionBackend::Sandboxed,
-            unsandboxed: false,
+            execution_backend: ExecutionBackend::Local,
+            unsandboxed: true,
         }];
 
         let run = run_dispatch(
@@ -1332,8 +1332,8 @@ mod tests {
             args: vec!["-c".into(), format!("echo '{event}'")],
             auth_mode: AuthMode::Subscription,
             priority: 1,
-            execution_backend: ExecutionBackend::Sandboxed,
-            unsandboxed: false,
+            execution_backend: ExecutionBackend::Local,
+            unsandboxed: true,
         }];
 
         let verdict = decide_review(

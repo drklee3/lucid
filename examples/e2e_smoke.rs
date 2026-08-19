@@ -31,8 +31,12 @@ async fn main() -> anyhow::Result<()> {
         args: vec!["-p".to_string()],
         auth_mode: AuthMode::Subscription,
         priority: 1,
-        execution_backend: ExecutionBackend::Sandboxed,
-        unsandboxed: false,
+        // `Local`/`unsandboxed`: this smoke test relies on the host's own
+        // `claude auth login` (subscription) session. `Sandboxed` runs inside
+        // a fresh container with no access to that host credential store —
+        // see docs/wiki/architecture/sandboxed-execution.md.
+        execution_backend: ExecutionBackend::Local,
+        unsandboxed: true,
     }];
 
     let observability = ObservabilityConfig {
