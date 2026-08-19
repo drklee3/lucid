@@ -89,3 +89,4 @@ Explicitly out of scope for the first build — not forgotten, just sequenced la
 - "Proof of work" artifacts attached to the tracker item/PR (CI status, walkthrough video, etc.) — noted pattern from Symphony/Cursor; one concrete instance (trace-correlation links) is now built and live-verified (spans actually land in the trace backend, correlated by `dispatch_id` — see `docs/wiki/architecture/trace-correlation.md`) — the rest (CI status, walkthrough video) still undesigned
 - Runaway/self-replicating-session guard — noted gap from cyrus's issue tracker, not designed
 - Rate-limit-specific failure handling as a distinct class from generic retry — noted gap, not designed
+- Script-backed implementations of `TrackerAdapter`/`PresenceSource`/`NotificationSink`, plus a `DispatchPolicy` pre-dispatch gate — extensibility direction sketched in `docs/wiki/architecture/extensibility-primitives.md`, no script contract or trait finalized yet

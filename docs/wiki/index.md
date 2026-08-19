@@ -26,6 +26,8 @@ An [LLM Wiki](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f)
 - [multi-project](architecture/multi-project.md) — one daemon instance managing many repos: `Daemon::tick()` loops every configured `ProjectRuntime` sequentially with one global presence resolution, repo-owned `lucid.project.toml` per-project config (Symphony's `WORKFLOW.md` pattern adapted), directory-detected `--project` CLI flag across the `task` subcommands (real overrides on `dispatch-now`, flag-acceptance-and-validation only on `list`/`create`/`approve`/`reject`); open: `FileTracker` id-collision across projects untested
 - [ci-quality-tooling](architecture/ci-quality-tooling.md) — cargo-deny over cargo-audit, SHA-pinned actions, zizmor annotations over SARIF, weekly-only cargo-mutants
 - [persistence](architecture/persistence.md) — flat-file-over-database convention across override_file, audit_log, FileTracker, and DaemonState; why rusqlite was removed unused; per-file corruption tolerance
+- [extensibility-primitives](architecture/extensibility-primitives.md) — design direction (not yet built): one script-backed-implementation mechanism per trait instead of a separate hooks system, `verify_cmd`/`HarnessProfile.cmd` as the already-proven precedent, the governing rule for when new capabilities should default to being scriptable
+- [ux-principles](architecture/ux-principles.md) — lawsofux.com's 30 UX laws evaluated against lucid's CLI/notification and extension-author surfaces; which concretely apply (Jakob's Law, Postel's Law, Tesler's Law, Hick's Law, Doherty Threshold...), which are adapted-from-visual, and which don't apply at all (Fitts's Law)
 
 ## Research (`research/`)
 
@@ -36,6 +38,7 @@ An [LLM Wiki](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f)
 - [matplotlib-incident](research/matplotlib-incident.md) — the sharpest documented no-per-action-review failure
 - [presence-automation-prior-art](research/presence-automation-prior-art.md) — idle/presence-gating outside coding agents
 - [open-questions](research/open-questions.md) — what the research pass left unresolved
+- [pi-harness-extensibility](research/pi-harness-extensibility.md) — pi.dev's minimal-core-plus-extensions philosophy compared against lucid's existing trait/profile-list seams
 
 ## Living outside the wiki
 
