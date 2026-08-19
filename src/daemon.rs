@@ -25,7 +25,7 @@ use crate::pr;
 use crate::presence::audit_log::AuditLog;
 use crate::presence::override_file::OverrideFile;
 use crate::presence::{self, PresenceMode, PresenceSourceList};
-use crate::state::{DaemonState, WorkerRun};
+use crate::state::{DaemonState, ProjectId, WorkerRun};
 use crate::tracker::{DecisionState, TrackerAdapter, TrackerIssue};
 use crate::worker;
 use crate::worktree;
@@ -63,6 +63,10 @@ pub struct Daemon {
     last_pm_wake: Mutex<Option<chrono::DateTime<Utc>>>,
     last_mode: Mutex<Option<PresenceMode>>,
     state_path: PathBuf,
+    /// This daemon's key into `DaemonState.runs`/`last_pm_wake` — today just the
+    /// single project it manages (see docs/wiki/architecture/multi-project.md,
+    /// build order item 3 for when this becomes one-of-several).
+    project_id: ProjectId,
 }
 
 impl Daemon {
@@ -79,6 +83,9 @@ impl Daemon {
             .unwrap_or_else(crate::config::default_override_path);
         let state_path = DaemonState::default_path();
         let loaded = DaemonState::load(&state_path);
+        let project_id: ProjectId = config.daemon.workdir.to_string_lossy().into_owned();
+        let project_runs = loaded.runs.get(&project_id).cloned().unwrap_or_default();
+        let project_last_pm_wake = loaded.last_pm_wake.get(&project_id).copied();
         Self {
             tracker,
             profiles: config.harness_profiles.clone(),
@@ -103,10 +110,11 @@ impl Daemon {
             tick_interval: Duration::from_secs(config.daemon.tick_interval_secs),
             stall_timeout: Duration::from_secs(config.daemon.stall_timeout_secs),
             pm_wake_interval: Duration::from_secs(config.daemon.pm_wake_interval_mins * 60),
-            runs: Mutex::new(loaded.runs),
-            last_pm_wake: Mutex::new(loaded.last_pm_wake),
+            runs: Mutex::new(project_runs),
+            last_pm_wake: Mutex::new(project_last_pm_wake),
             last_mode: Mutex::new(loaded.last_mode),
             state_path,
+            project_id,
         }
     }
 
@@ -117,9 +125,15 @@ impl Daemon {
     /// Returns an error if the parent directory can't be created or the file
     /// can't be written.
     fn save_state(&self) -> anyhow::Result<()> {
+        let mut runs = HashMap::new();
+        runs.insert(self.project_id.clone(), self.runs.lock().unwrap().clone());
+        let mut last_pm_wake = HashMap::new();
+        if let Some(t) = *self.last_pm_wake.lock().unwrap() {
+            last_pm_wake.insert(self.project_id.clone(), t);
+        }
         let state = DaemonState {
-            runs: self.runs.lock().unwrap().clone(),
-            last_pm_wake: *self.last_pm_wake.lock().unwrap(),
+            runs,
+            last_pm_wake,
             last_mode: *self.last_mode.lock().unwrap(),
         };
         state.save(&self.state_path)
@@ -654,6 +668,7 @@ mod tests {
             last_pm_wake: Mutex::new(None),
             last_mode: Mutex::new(None),
             state_path: std::env::temp_dir().join(format!("lucid-daemon-test-state-{unique}.json")),
+            project_id: format!("test-project-{unique}"),
         }
     }
 
