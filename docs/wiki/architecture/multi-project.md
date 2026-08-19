@@ -1,6 +1,6 @@
 # Multi-Project: One Daemon Instance, Many Repos
 
-Today `lucid.toml` and `Daemon` both assume exactly one repo, one tracker binding, one `workdir`. This page designs the shape for one running daemon instance to manage several repos at once, rather than one `lucid start` process per repo.
+One running `lucid start` process manages several repos at once, rather than one process per repo: `lucid.toml` carries a `[[projects]]` pointer array, and `Daemon` walks every configured project each tick, each with its own tracker binding and `workdir`. A `lucid.toml` with no `[[projects]]` keeps today's original single-repo shape unchanged.
 
 ## What Symphony already does here
 
@@ -24,15 +24,25 @@ Each pointed-to repo's own file is named `lucid.project.toml` — a filename thi
 
 Validation is opt-in, not eager: `Config::validate_projects()` resolves and parses every configured project's `lucid.project.toml`, returning a per-project error naming the offending path if one is missing or malformed. It's only called from the `lucid config validate` CLI command (`src/main.rs`) — every other command that calls `Config::load()` doesn't touch `[[projects]]` at all today, so a broken per-project config file stays silent until an operator explicitly runs `config validate`.
 
-**Open, unresolved**: `TrackerConfig.project_key` (existing, global, under `[tracker]`) and `ProjectConfig.project_key` (new, per-repo, in `lucid.project.toml`) now both exist with identical meaning. Nothing consumes or reconciles the per-project one yet — it's inert until the daemon loop (build order items 2-3) actually wires per-project dispatch through the tracker. Which one wins, or whether they need to be merged into one field, is not decided.
+`TrackerConfig.project_key` (existing, global, under `[tracker]`) and `ProjectConfig.project_key` (per-repo, in `lucid.project.toml`) both exist with identical meaning; see the Daemon loop section below for which one wins now that `effective_tracker_config()` reconciles them.
 
 ## Daemon loop
 
-`Daemon::tick()` already does reconcile → presence-check → dispatch → PM-wake in one pass per call. This wraps that in `for project in &self.projects`, still fully sequential for `Local`-execution dispatches (see [sandboxed-execution](sandboxed-execution.md) for when that constraint relaxes) — one project's dispatch completes before the next project's starts, within a tick, matching the daemon's existing "deliberately sequential" design rather than introducing a second concurrency model to reason about.
+`Daemon::tick()` walks every configured project sequentially, one at a time — no second concurrency model layered on top of the daemon's existing "deliberately sequential" dispatch design (see [sandboxed-execution](sandboxed-execution.md) for when that constraint relaxes).
 
-`DaemonState.runs` and `last_pm_wake` need to become keyed by project id (`HashMap<ProjectId, ProjectState>`) instead of flat — otherwise two projects' PM-wake backoff timers and retry-tracking collide on the same map.
+`DaemonState.runs` and `last_pm_wake` are keyed by project id (`HashMap<ProjectId, ...>`) rather than flat, so two projects' PM-wake backoff timers and retry-tracking don't collide on the same map.
 
-**Known sharp edge, not yet resolved**: `FileTracker`'s issue-id scheme (`LOCAL-{n}`, a counter local to one JSON file) would collide across two separate `FileTracker`-backed projects if they're ever run against a shared id-namespace — today each `FileTracker` instance has its own file, so this is fine as long as `runs`/`DaemonState` keying stays project-scoped too (see above). Worth a test once multi-project is real, not before.
+### Implemented (build order item 3, commit `f72c75b`)
+
+`Daemon` (`src/daemon.rs`) no longer holds tracker/workdir/base_branch/verify_cmd/runs/last_pm_wake directly; those moved onto a new private `ProjectRuntime` struct, one instance per configured project, held as `projects: Vec<ProjectRuntime>` on `Daemon`. `Daemon` itself keeps only what's genuinely shared: harness profiles, observability config, presence sources/config, tick/stall/PM-wake timing, and the override file/audit log. `Daemon::new` now returns `anyhow::Result<Self>` instead of `Self`, since building a project's tracker (or loading its `lucid.project.toml`) can fail — with `[[projects]]` empty, it builds exactly one `ProjectRuntime` wrapping `config.daemon.*` directly (today's single-repo shape, unchanged); otherwise one `ProjectRuntime` per pointer, each loading its own `ProjectConfig` and its own tracker via `effective_tracker_config()` (below).
+
+`tick()` sequences as: for each project in order, `tick_project()` runs `reconcile_needs_review()` then `dispatch_approved_issues()` (dispatch only runs if reconcile succeeded, matching prior single-project sequencing) — then, once every project's reconcile/dispatch has been attempted, presence resolves exactly once, globally, exactly as before; if that resolves `Autonomous`, `maybe_wake_pm()` runs once per project in the same per-project loop shape. A given project's `tick_project()` error is caught, logged (`project `{id}`: tick failed: {e}`), and does not stop the remaining projects' reconcile/dispatch/PM-wake from running — but `tick()` still remembers the first such error and returns it once every project (and presence resolution) has been handled, so `run_foreground`'s caller-level log still fires. A PM-wake failure was already logged-and-swallowed rather than propagated before this change and stays that way per-project.
+
+### `project_key`: `ProjectConfig` wins over `TrackerConfig` when set
+
+`effective_tracker_config()` (`src/daemon.rs`) resolves this: a project's own declared `project_key` (from its `lucid.project.toml`) wins when set; the operator's central `[tracker]` block's `project_key` is the fallback when a project doesn't declare its own. Everything else on `TrackerConfig` — `backend`, `team_key`, `api_key_env`, `managed_label` — stays global, applied identically to every project's tracker; only `project_key` is something a repo plausibly wants to declare for itself, since it's the one field that names *which* Linear project a given repo's issues live under.
+
+**Known sharp edge, not yet resolved**: `FileTracker`'s issue-id scheme (`LOCAL-{n}`, a counter local to one JSON file) would collide across two separate `FileTracker`-backed projects if they're ever run against a shared id-namespace. Each `FileTracker` instance has its own file (one per project's `TrackerConfig.file_path`), and `runs`/`DaemonState` keying is project-scoped (see above), so this is still fine in practice now that multi-project ticks are real and running — but it's untested, and build order item 5 below is exactly this check.
 
 ## CLI: directory detection, not a persistent stateful context
 
@@ -48,13 +58,13 @@ Lucid already resolves `lucid.toml` by directory/file discovery (`--config` → 
 
 `lucid task create`/`approve`/`reject`/`list`/`dispatch-now` all gained `--project <name>` (`src/cli.rs`). Resolution happens fresh on every invocation via `resolve_project()` (`src/main.rs`) — nothing persistent is written, matching the "not a stateful context" decision above: an explicit `--project` wins if given, otherwise whichever configured `[[projects]]` entry's `path` contains the current working directory. A project has no separate `name` field in `[[projects]]`; the CLI addresses it by the final path component of its pointer `path` (`project_name()`). Zero or more than one directory match, or a `--project` naming an unconfigured project, is a hard error listing the configured project names rather than guessing. Repos with no `[[projects]]` configured are unaffected: `--project` given with none configured errors, omitted is a no-op — identical to behavior before this change.
 
-Only `dispatch-now` changes runtime behavior on a resolved project: it applies the project's `path`/`base_branch`/`verify_cmd` as overrides for `config.daemon.workdir`/`base_branch`/`verify_cmd` before dispatching. `list`/`create`/`approve`/`reject` accept and validate `--project`, but don't yet change tracker scoping — `resolve_project()` is called for its validation/error behavior only, since the `ProjectConfig.project_key` vs. `TrackerConfig.project_key` reconciliation this would need is still the open item noted above (build order item 1's Implemented section).
+Only `dispatch-now` changes runtime behavior on a resolved project: it applies the project's `path`/`base_branch`/`verify_cmd` as overrides for `config.daemon.workdir`/`base_branch`/`verify_cmd` before dispatching. `list`/`create`/`approve`/`reject` accept and validate `--project`, but don't yet change tracker scoping — `resolve_project()` is called for its validation/error behavior only. `Daemon::tick()` is what actually applies `ProjectConfig.project_key` (via `effective_tracker_config()`, see the Daemon loop section above) to scope a project's tracker queries; these CLI subcommands don't yet route through that same resolution.
 
 ## Build order
 
 1. `[[projects]]` pointer array in `lucid.toml` + per-repo checked-in config file shape (the `WORKFLOW.md`-equivalent). **Done** — see Implemented section above.
-2. `DaemonState` re-keyed by project id.
-3. `Daemon::tick()` loops projects sequentially.
+2. `DaemonState` re-keyed by project id. **Done** — `runs`/`last_pm_wake` are `HashMap<ProjectId, _>` on `DaemonState` (`src/state.rs`, commit `bab7e22`).
+3. `Daemon::tick()` loops projects sequentially. **Done** — see Implemented section above.
 4. `--project <name>` CLI flag + directory-detection default across the `task` subcommands. **Done** — see Implemented section above.
 5. `FileTracker` id-collision check once multiple projects can share a daemon process.
 
