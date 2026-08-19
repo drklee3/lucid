@@ -95,13 +95,23 @@ pub struct WorkerRun {
     pub last_error: Option<String>,
 }
 
+/// Identifies one `[[projects]]` entry (see `config::ProjectPointer`) within
+/// daemon-wide state. Today's single-project daemon uses one derived from its
+/// `workdir`; see docs/wiki/architecture/multi-project.md.
+pub type ProjectId = String;
+
 /// Daemon state persisted across restarts — same flat-file convention as
 /// `presence::override_file` and `presence::audit_log` rather than a database
 /// (see docs/wiki/architecture/persistence.md).
+///
+/// `runs` and `last_pm_wake` are keyed by `ProjectId` rather than flat, so two
+/// projects' dispatch retry-tracking and PM-wake backoff timers don't collide
+/// once one daemon manages several repos (see
+/// docs/wiki/architecture/multi-project.md).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DaemonState {
-    pub runs: HashMap<String, WorkerRun>,
-    pub last_pm_wake: Option<DateTime<Utc>>,
+    pub runs: HashMap<ProjectId, HashMap<String, WorkerRun>>,
+    pub last_pm_wake: HashMap<ProjectId, DateTime<Utc>>,
     pub last_mode: Option<PresenceMode>,
 }
 
@@ -169,7 +179,7 @@ mod tests {
     fn missing_file_loads_as_empty_state() {
         let state = DaemonState::load(&scratch_path());
         assert!(state.runs.is_empty());
-        assert!(state.last_pm_wake.is_none());
+        assert!(state.last_pm_wake.is_empty());
         assert!(state.last_mode.is_none());
     }
 
@@ -183,23 +193,72 @@ mod tests {
     }
 
     #[test]
-    fn save_then_load_round_trips() {
+    fn save_then_load_round_trips_single_project() {
         let path = scratch_path();
+        let mut project_runs = HashMap::new();
+        project_runs.insert("ENG-9".to_string(), sample_run());
         let mut runs = HashMap::new();
-        runs.insert("ENG-9".to_string(), sample_run());
+        runs.insert("project-a".to_string(), project_runs);
+        let mut last_pm_wake = HashMap::new();
+        last_pm_wake.insert("project-a".to_string(), Utc::now());
         let state = DaemonState {
             runs,
-            last_pm_wake: Some(Utc::now()),
+            last_pm_wake,
             last_mode: Some(PresenceMode::Autonomous),
         };
         state.save(&path).unwrap();
 
         let loaded = DaemonState::load(&path);
         assert_eq!(loaded.runs.len(), 1);
-        assert_eq!(loaded.runs["ENG-9"].issue_id, "ENG-9");
-        assert_eq!(loaded.runs["ENG-9"].phase, WorkerPhase::StreamingTurn);
+        let project_runs = &loaded.runs["project-a"];
+        assert_eq!(project_runs.len(), 1);
+        assert_eq!(project_runs["ENG-9"].issue_id, "ENG-9");
+        assert_eq!(project_runs["ENG-9"].phase, WorkerPhase::StreamingTurn);
         assert_eq!(loaded.last_mode, Some(PresenceMode::Autonomous));
-        assert!(loaded.last_pm_wake.is_some());
+        assert!(loaded.last_pm_wake.contains_key("project-a"));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn two_projects_state_does_not_collide() {
+        let path = scratch_path();
+
+        let mut runs_alpha = HashMap::new();
+        runs_alpha.insert("ENG-9".to_string(), sample_run());
+        let mut runs_beta = HashMap::new();
+        let mut beta_run = sample_run();
+        beta_run.issue_id = "ENG-1".to_string();
+        beta_run.phase = WorkerPhase::Failed;
+        runs_beta.insert("ENG-1".to_string(), beta_run);
+
+        let mut runs = HashMap::new();
+        runs.insert("project-a".to_string(), runs_alpha);
+        runs.insert("project-b".to_string(), runs_beta);
+
+        let mut last_pm_wake = HashMap::new();
+        let wake_a = Utc::now();
+        last_pm_wake.insert("project-a".to_string(), wake_a);
+
+        let state = DaemonState {
+            runs,
+            last_pm_wake,
+            last_mode: None,
+        };
+        state.save(&path).unwrap();
+
+        let loaded = DaemonState::load(&path);
+        assert_eq!(loaded.runs.len(), 2);
+        assert_eq!(
+            loaded.runs["project-a"]["ENG-9"].phase,
+            WorkerPhase::StreamingTurn
+        );
+        assert_eq!(loaded.runs["project-b"]["ENG-1"].phase, WorkerPhase::Failed);
+        assert!(!loaded.runs["project-a"].contains_key("ENG-1"));
+        assert!(!loaded.runs["project-b"].contains_key("ENG-9"));
+
+        assert_eq!(loaded.last_pm_wake.get("project-a"), Some(&wake_a));
+        assert!(!loaded.last_pm_wake.contains_key("project-b"));
 
         let _ = std::fs::remove_file(&path);
     }
