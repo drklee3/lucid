@@ -1,7 +1,7 @@
 //! Config loading — harness profiles, tracker settings, presence thresholds, and
 //! the daemon's own tick/timeout knobs.
 
-use crate::harness::HarnessProfile;
+use crate::harness::{ExecutionBackend, HarnessProfile};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -35,6 +35,21 @@ pub struct ProjectPointer {
 /// `path` is expected to contain.
 pub const PROJECT_CONFIG_FILENAME: &str = "lucid.project.toml";
 
+/// Where a project's tickets can originate. `OperatorOnly` — the operator's own
+/// CLI (`lucid task create`) or direct tracker approval — carries the same trust
+/// level as running lucid locally. `AcceptsExternal` means anyone who can create a
+/// tracker item (e.g. a teammate's Discord message) can produce a `Pending`
+/// proposal without the operator writing it, which is the case
+/// `Config::validate_trust_routing` requires a sandboxed harness profile for —
+/// see docs/wiki/architecture/sandboxed-execution.md's trust-routing section.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum TicketSource {
+    #[default]
+    OperatorOnly,
+    AcceptsExternal,
+}
+
 /// The repo-owned half of per-project config — checked into and versioned
 /// with the project's own code, read from `PROJECT_CONFIG_FILENAME` at the
 /// project's pointer path. See docs/wiki/architecture/multi-project.md.
@@ -54,6 +69,11 @@ pub struct ProjectConfig {
     /// target. Defaults to `"main"`.
     #[serde(default = "default_base_branch")]
     pub base_branch: String,
+    /// Who can put a ticket in front of this project's dispatch loop. Defaults to
+    /// `OperatorOnly` — a project only starts requiring a sandboxed harness
+    /// profile once it opts into `AcceptsExternal`.
+    #[serde(default)]
+    pub ticket_source: TicketSource,
 }
 
 impl ProjectConfig {
@@ -260,6 +280,38 @@ impl Config {
                     .map_err(|e| anyhow::anyhow!("project `{}`: {e}", project.path.display()))
             })
             .collect()
+    }
+
+    /// Refuses to pass if any project's resolved `ProjectConfig` accepts external
+    /// ticket sources while no `harness_profiles` entry runs
+    /// `ExecutionBackend::Sandboxed` — a project that never leaves `OperatorOnly`
+    /// is exempt, since this is a rail for external-trigger risk specifically, not
+    /// a blanket sandboxing mandate. See docs/wiki/architecture/
+    /// sandboxed-execution.md's trust-routing section. `projects` must be the
+    /// output of `validate_projects` for `self` (same order as `self.projects`).
+    ///
+    /// # Errors
+    /// Returns an error naming the offending project's path if it accepts
+    /// external ticket sources and no configured harness profile is `Sandboxed`.
+    pub fn validate_trust_routing(&self, projects: &[ProjectConfig]) -> anyhow::Result<()> {
+        let has_sandboxed_profile = self
+            .harness_profiles
+            .iter()
+            .any(|profile| profile.execution_backend == ExecutionBackend::Sandboxed);
+        if has_sandboxed_profile {
+            return Ok(());
+        }
+        for (pointer, project) in self.projects.iter().zip(projects) {
+            if project.ticket_source == TicketSource::AcceptsExternal {
+                anyhow::bail!(
+                    "project `{}` accepts external ticket sources but no harness profile has \
+                     execution_backend = \"Sandboxed\" configured — see \
+                     docs/wiki/architecture/sandboxed-execution.md",
+                    pointer.path.display()
+                );
+            }
+        }
+        Ok(())
     }
 }
 
@@ -559,5 +611,114 @@ mod tests {
         assert!(err.to_string().contains("unsandboxed = true"));
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// Writes a top-level config with one `[[projects]]` entry whose
+    /// `lucid.project.toml` sets `ticket_source`, plus harness profiles governed
+    /// by `harness_execution_backend_lines` (e.g. `execution_backend = "Local"\nunsandboxed = true`,
+    /// or `""` for the all-`Sandboxed`-default case). Returns the top-level config
+    /// path and the project dir, both left on disk for the caller to clean up.
+    fn write_trust_routing_config(
+        ticket_source_line: &str,
+        harness_execution_backend_lines: &str,
+    ) -> (PathBuf, PathBuf) {
+        let project_dir =
+            std::env::temp_dir().join(format!("lucid-project-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&project_dir).unwrap();
+        std::fs::write(
+            project_dir.join(PROJECT_CONFIG_FILENAME),
+            format!(
+                r#"
+                project_key = "ENG-123"
+                {ticket_source_line}
+                "#
+            ),
+        )
+        .unwrap();
+
+        let toml = format!(
+            r#"
+            [[harness_profiles]]
+            name = "claude-profile"
+            kind = "ClaudeCode"
+            cmd = "claude"
+            args = ["-p"]
+            auth_mode = "Subscription"
+            priority = 1
+            {harness_execution_backend_lines}
+
+            [tracker]
+            backend = "file"
+            file_path = "/tmp/lucid-test-tracker.json"
+
+            [presence]
+            idle_threshold_minutes = 20
+            proposal_cap_per_wake = 3
+
+            [observability]
+            otlp_endpoint = "http://localhost:4317"
+            trace_ui_base_url = "http://localhost:6006"
+
+            [[projects]]
+            path = "{}"
+        "#,
+            project_dir.display()
+        );
+        let path =
+            std::env::temp_dir().join(format!("lucid-config-test-{}.toml", uuid::Uuid::new_v4()));
+        std::fs::write(&path, toml).unwrap();
+        (path, project_dir)
+    }
+
+    #[test]
+    fn external_accepting_project_with_sandboxed_profile_passes() {
+        let (path, project_dir) = write_trust_routing_config(
+            r#"ticket_source = "accepts-external""#,
+            "", // default execution_backend = Sandboxed
+        );
+
+        let config = Config::load(&path).unwrap();
+        let projects = config.validate_projects().unwrap();
+        assert_eq!(projects[0].ticket_source, TicketSource::AcceptsExternal);
+        config.validate_trust_routing(&projects).unwrap();
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir_all(&project_dir);
+    }
+
+    #[test]
+    fn external_accepting_project_with_only_unsandboxed_profiles_fails_validation() {
+        let (path, project_dir) = write_trust_routing_config(
+            r#"ticket_source = "accepts-external""#,
+            r#"execution_backend = "Local"
+            unsandboxed = true"#,
+        );
+
+        let config = Config::load(&path).unwrap();
+        let projects = config.validate_projects().unwrap();
+        let err = config.validate_trust_routing(&projects).unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains(&project_dir.display().to_string()));
+        assert!(message.contains("Sandboxed"));
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir_all(&project_dir);
+    }
+
+    #[test]
+    fn operator_only_project_with_only_unsandboxed_profiles_passes() {
+        let (path, project_dir) = write_trust_routing_config(
+            "", // default ticket_source = OperatorOnly
+            r#"execution_backend = "Local"
+            unsandboxed = true"#,
+        );
+
+        let config = Config::load(&path).unwrap();
+        let projects = config.validate_projects().unwrap();
+        assert_eq!(projects[0].ticket_source, TicketSource::OperatorOnly);
+        config.validate_trust_routing(&projects).unwrap();
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir_all(&project_dir);
     }
 }

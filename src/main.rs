@@ -386,7 +386,8 @@ async fn config_validate(config: Option<PathBuf>) -> anyhow::Result<()> {
             );
         }
     }
-    config.validate_projects()?;
+    let projects = config.validate_projects()?;
+    config.validate_trust_routing(&projects)?;
     if !config.projects.is_empty() {
         println!("{} project(s) valid", config.projects.len());
     }
