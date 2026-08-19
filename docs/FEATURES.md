@@ -54,6 +54,7 @@ listed separately and are explicitly out of v1.
 - [x] Decision surface: for `LinearAdapter`, moves the issue's real ticket `state` field (`Pending`/`Approved`/`In Review`/`Done`, four named workflow states required per team) via `issueUpdate`, not a label; `Rejected`/`StaleClosed` archive the issue (`issueArchive`) instead of using a fifth/sixth state — see `docs/wiki/architecture/tracker-adapter.md` § Decision state: the issue's real ticket state, not a label. `FileTracker` filters directly on its own `decision_state` field.
 - [ ] Auto-stale-close after N days (default 7) — distinct from an explicit reject for dedup purposes
 - [x] Dedup query: title-similarity match via `query_similar` (Linear's `searchIssues`; file backend's is a case-insensitive substring match) — content-hash matching and open-PR-file-overlap checking not built
+- [x] Dependency-aware dispatch: `TrackerAdapter::blockers` reads an issue's real tracker-native blocking relationships (Linear's `blocks`/`blockedBy` issue-relations, read via `inverseRelations`; `FileTracker`'s own `blocked_by` field for local testing) — `dispatch_approved_issues` skips an `Approved` issue this tick if any blocker isn't `Done`, noting it once (`[lucid:blocked]` marker) rather than every tick
 
 ## CLI / observability
 

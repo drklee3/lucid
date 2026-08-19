@@ -37,6 +37,13 @@ use std::time::Duration;
 
 const PM_GOAL: &str = "keep the codebase healthy and close concrete, low-risk gaps";
 
+/// Prefix on a blocked-issue note, checked against `list_comments` before
+/// attaching another one — grepped for regardless of author, so it works the
+/// same whether the comment came back rendered under lucid's own name (`FileTracker`)
+/// or whatever Linear API-key user posted it (`LinearAdapter`). Keeps a still-blocked
+/// issue from accumulating a duplicate note every tick.
+const BLOCKED_NOTE_MARKER: &str = "[lucid:blocked]";
+
 pub struct Daemon {
     tracker: Box<dyn TrackerAdapter>,
     profiles: Vec<HarnessProfile>,
@@ -200,6 +207,11 @@ impl Daemon {
             .query_by_decision_state(DecisionState::Approved)
             .await?;
         for issue in approved {
+            if skip_if_blocked(self.tracker.as_ref(), &issue).await? {
+                println!("skipping {} — blocked", issue.id);
+                continue;
+            }
+
             // Dispatch on first sight, or retry a previous `Failed`/`TimedOut` run
             // — anything else (in particular `Succeeded`) is done and stays done.
             // No true in-flight tracking: ticks are sequential (see module doc),
@@ -328,6 +340,42 @@ async fn reconcile_issue(
     tracker.set_decision_state(&issue.id, state).await
 }
 
+/// Checks `issue`'s real tracker-native blockers and reports whether dispatch
+/// should skip it this tick — any blocker not yet `Done` (including one with no
+/// known decision state at all) counts as unresolved. On the first tick an issue
+/// is found blocked, attaches a `BLOCKED_NOTE_MARKER` note naming the blocker(s);
+/// on later ticks it stays blocked, `list_comments` already carries that marker
+/// so no duplicate note goes out.
+async fn skip_if_blocked(
+    tracker: &dyn TrackerAdapter,
+    issue: &TrackerIssue,
+) -> anyhow::Result<bool> {
+    let blockers = tracker.blockers(&issue.id).await?;
+    let unresolved: Vec<&TrackerIssue> = blockers
+        .iter()
+        .filter(|b| b.decision_state != Some(DecisionState::Done))
+        .collect();
+    if unresolved.is_empty() {
+        return Ok(false);
+    }
+
+    let already_noted = tracker
+        .list_comments(&issue.id)
+        .await?
+        .iter()
+        .any(|comment| comment.contains(BLOCKED_NOTE_MARKER));
+    if !already_noted {
+        let names = unresolved
+            .iter()
+            .map(|b| b.identifier.clone().unwrap_or_else(|| b.id.clone()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let note = format!("{BLOCKED_NOTE_MARKER} waiting on: {names}");
+        tracker.attach_note(&issue.id, &note).await?;
+    }
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -390,6 +438,9 @@ mod tests {
         async fn list_comments(&self, _issue_id: &str) -> anyhow::Result<Vec<String>> {
             Ok(Vec::new())
         }
+        async fn blockers(&self, _issue_id: &str) -> anyhow::Result<Vec<TrackerIssue>> {
+            Ok(Vec::new())
+        }
     }
 
     fn issue() -> TrackerIssue {
@@ -401,6 +452,114 @@ mod tests {
             review: ReviewMode::Agent,
             identifier: None,
         }
+    }
+
+    fn scratch_tracker(name: &str) -> crate::tracker::file::FileTracker {
+        let path = std::env::temp_dir().join(format!(
+            "lucid-daemon-blocked-test-{name}-{}.json",
+            uuid::Uuid::new_v4()
+        ));
+        crate::tracker::file::FileTracker::open(&path).unwrap()
+    }
+
+    fn blocked_proposal(title: &str) -> Proposal {
+        Proposal {
+            title: title.to_string(),
+            summary: "summary".to_string(),
+            why_now: vec!["because".to_string()],
+            effort_estimate: crate::tracker::EffortEstimate::Small,
+            risk_note: "none".to_string(),
+            task_type: "feature".to_string(),
+            target_paths: vec![],
+            acceptance_criteria: vec![],
+            research_ref: None,
+            review: ReviewMode::Auto,
+            verify_cmd: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn approved_issue_with_a_done_blocker_dispatches_normally() {
+        let tracker = scratch_tracker("done-blocker");
+        let blocker_id = tracker
+            .create_proposal(&blocked_proposal("Blocker"))
+            .await
+            .unwrap();
+        tracker
+            .set_decision_state(&blocker_id, DecisionState::Done)
+            .await
+            .unwrap();
+        let issue_id = tracker
+            .create_proposal(&blocked_proposal("Blocked issue"))
+            .await
+            .unwrap();
+        tracker.set_blockers(&issue_id, vec![blocker_id]).unwrap();
+
+        let issue = tracker
+            .query_by_decision_state(DecisionState::Pending)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|i| i.id == issue_id)
+            .unwrap();
+
+        let skipped = skip_if_blocked(&tracker, &issue).await.unwrap();
+        assert!(!skipped);
+        assert!(tracker.list_comments(&issue_id).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn approved_issue_with_a_non_done_blocker_is_skipped_and_noted_once() {
+        let tracker = scratch_tracker("pending-blocker");
+        let blocker_id = tracker
+            .create_proposal(&blocked_proposal("Blocker"))
+            .await
+            .unwrap();
+        let issue_id = tracker
+            .create_proposal(&blocked_proposal("Blocked issue"))
+            .await
+            .unwrap();
+        tracker
+            .set_blockers(&issue_id, vec![blocker_id.clone()])
+            .unwrap();
+
+        let issue = tracker
+            .query_by_decision_state(DecisionState::Pending)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|i| i.id == issue_id)
+            .unwrap();
+
+        assert!(skip_if_blocked(&tracker, &issue).await.unwrap());
+        let comments = tracker.list_comments(&issue_id).await.unwrap();
+        assert_eq!(comments.len(), 1);
+        assert!(comments[0].contains(BLOCKED_NOTE_MARKER));
+        assert!(comments[0].contains(&blocker_id));
+
+        // Second check on the same still-blocked issue must not add another note.
+        assert!(skip_if_blocked(&tracker, &issue).await.unwrap());
+        assert_eq!(tracker.list_comments(&issue_id).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn issue_with_no_blockers_is_unaffected() {
+        let tracker = scratch_tracker("no-blockers");
+        let issue_id = tracker
+            .create_proposal(&blocked_proposal("Standalone issue"))
+            .await
+            .unwrap();
+
+        let issue = tracker
+            .query_by_decision_state(DecisionState::Pending)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|i| i.id == issue_id)
+            .unwrap();
+
+        assert!(!skip_if_blocked(&tracker, &issue).await.unwrap());
+        assert!(tracker.list_comments(&issue_id).await.unwrap().is_empty());
     }
 
     #[tokio::test]

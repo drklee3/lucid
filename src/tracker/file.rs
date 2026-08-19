@@ -23,6 +23,12 @@ struct StoredIssue {
     review: ReviewMode,
     decision_state: Option<DecisionState>,
     notes: Vec<String>,
+    /// Ids of other stored issues blocking this one — the local stand-in for
+    /// Linear's real issue-relations, settable only via `set_blockers` (no
+    /// `TrackerAdapter` method sets this: a real backend's relations aren't
+    /// created through lucid).
+    #[serde(default)]
+    blocked_by: Vec<String>,
 }
 
 pub struct FileTracker {
@@ -60,6 +66,26 @@ impl FileTracker {
         Ok(())
     }
 
+    /// Test-only local stand-in for setting up a blocking relationship — a real
+    /// tracker's relations are set on the tracker's own side (e.g. Linear's UI or
+    /// API), never through lucid, so no `TrackerAdapter` method offers this.
+    ///
+    /// # Errors
+    /// Returns an error if `issue_id` isn't a known issue.
+    ///
+    /// # Panics
+    /// Panics if the internal issue-store mutex is poisoned (a prior panic while
+    /// holding the lock) — not expected in normal operation.
+    pub fn set_blockers(&self, issue_id: &str, blocker_ids: Vec<String>) -> anyhow::Result<()> {
+        let mut issues = self.issues.lock().unwrap();
+        let issue = issues
+            .iter_mut()
+            .find(|i| i.id == issue_id)
+            .ok_or_else(|| anyhow::anyhow!("no such issue: {issue_id}"))?;
+        issue.blocked_by = blocker_ids;
+        self.persist(&issues)
+    }
+
     fn as_tracker_issue(issue: &StoredIssue) -> TrackerIssue {
         TrackerIssue {
             id: issue.id.clone(),
@@ -84,6 +110,7 @@ impl TrackerAdapter for FileTracker {
             review: proposal.review,
             decision_state: Some(DecisionState::Pending),
             notes: Vec::new(),
+            blocked_by: Vec::new(),
         });
         self.persist(&issues)?;
         Ok(id)
@@ -137,6 +164,7 @@ impl TrackerAdapter for FileTracker {
                 review: ReviewMode::Auto,
                 decision_state: None,
                 notes: vec![body.to_string()],
+                blocked_by: Vec::new(),
             });
         }
         self.persist(&issues)
@@ -163,6 +191,19 @@ impl TrackerAdapter for FileTracker {
                     .collect()
             })
             .unwrap_or_default())
+    }
+
+    async fn blockers(&self, issue_id: &str) -> anyhow::Result<Vec<TrackerIssue>> {
+        let issues = self.issues.lock().unwrap();
+        let Some(issue) = issues.iter().find(|i| i.id == issue_id) else {
+            return Ok(Vec::new());
+        };
+        Ok(issue
+            .blocked_by
+            .iter()
+            .filter_map(|id| issues.iter().find(|i| &i.id == id))
+            .map(Self::as_tracker_issue)
+            .collect())
     }
 }
 
