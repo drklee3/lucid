@@ -1,39 +1,72 @@
 # lucid
 
-Autonomous, presence-aware development orchestration. Named for lucid dreaming —
-acts on its own, but stays directed within bounds you set; never fully unsupervised.
+Presence-aware daemon that keeps developing your repo while you're away, and gets out of the way when you're back.
 
-A standalone Rust daemon that, while you're away (presence-gated, not on a naive
-schedule), investigates a repo against a stated goal, flags concrete gaps as
-proposals for you to approve, and dispatches approved work to a coding harness
-(`claude -p`, `codex exec`, or others) — reconciling state, retrying, and
-reporting back the same way it would if you were watching.
+Named for lucid dreaming: it acts on its own, but stays directed within bounds you set — never fully unsupervised.
 
-Tracker-agnostic, harness-agnostic, model-agnostic by design. See
-[`docs/wiki/index.md`](docs/wiki/index.md) for the full architecture, resolved
-decisions, and grounding research; [`docs/FEATURES.md`](docs/FEATURES.md) for
-exactly what's built vs. still open.
+- **Investigates** a repo against a stated goal and flags concrete gaps as tracker proposals for you to approve.
+- **Dispatches** approved work to a coding harness (`claude -p`, `codex exec`, ...) in an isolated git worktree, sandboxed by default.
+- **Reconciles**: retries stalled runs, opens/merges PRs via `gh`, reports back — the same loop whether you're watching or not.
+- **Presence-gated**, not cron-scheduled: autonomous work only runs once you've gone idle.
+- Tracker-agnostic, harness-agnostic, model-agnostic by design.
+
+See [`docs/wiki/index.md`](docs/wiki/index.md) for full architecture and resolved decisions, and [`docs/FEATURES.md`](docs/FEATURES.md) for what's built vs. still open.
+
+## How it fits together
+
+```mermaid
+flowchart TB
+    subgraph daemon["lucid daemon (Rust, always-on)"]
+        direction TB
+
+        presence["Presence watcher\nidle/active detection"]
+
+        subgraph pm_block["Proposal pipeline"]
+            direction LR
+            pm["PM agent\ngap detection on wake"] --> research["Research agent\nfeasibility validation"]
+        end
+
+        subgraph worker_block["Dispatch pipeline"]
+            direction LR
+            worktree["Per-issue git worktree"] --> exec["Harness dispatch\nsandboxed by default"] --> pr["PR open / merge\nvia gh"]
+        end
+
+        reconcile["Reconciliation loop\npoll · stall-detect · retry"]
+
+        presence -->|autonomous mode| pm_block
+        research -->|proposal filed| tracker
+        tracker -->|approved issue| worker_block
+        reconcile --> worker_block
+        reconcile --> tracker
+    end
+
+    tracker[("Tracker adapter\nLinear / file-backed")]
+    harness[["Coding harness\nclaude / codex / ..."]]
+    github[["GitHub (gh)"]]
+    otel[("OTel / Phoenix\ntrace correlation")]
+
+    exec <-->|subprocess| harness
+    pr <--> github
+    exec -.->|traces| otel
+
+    classDef ext fill:#e8e8e8,stroke:#888,color:#333;
+    class tracker,harness,github,otel ext;
+```
+
+Everything inside the daemon is one small standalone process — no framework, no embedded agent host. Each labeled piece has its own wiki page: [presence](docs/wiki/architecture/presence-detection.md), [PM scope](docs/wiki/architecture/pm-scope.md), [research agent](docs/wiki/architecture/research-agent.md), [tracker adapter](docs/wiki/architecture/tracker-adapter.md), [harness dispatch](docs/wiki/architecture/harness-dispatch.md), [sandboxed execution](docs/wiki/architecture/sandboxed-execution.md), [worker completion](docs/wiki/architecture/worker-completion.md), [reconciliation](docs/wiki/architecture/symphony-patterns.md).
 
 ## Status
 
-Working MVP, live-tested against real `claude -p` subscription dispatch — not a
-prototype, but not feature-complete either:
+Working MVP, live-tested against real `claude -p` subscription dispatch — not a prototype, but not feature-complete either.
 
-- ✅ Presence-gated reconciliation loop (`lucid start`), PM gap-detection wake,
-  Claude Code dispatch with block/timeout handling, file-backed and real Linear
-  tracker adapters, OTel trace correlation back to the tracker item, per-issue git
-  worktree isolation with PR-based completion (every dispatch gets its own
-  branch/worktree; `lucid` pushes and opens a PR via `gh`, merging it itself when
-  `ReviewMode` says the task can close without a human).
-- ⛔ No cross-process `status`/`stop` (needs an IPC layer, not designed yet),
-  state is in-memory only (no restart persistence).
+- ✅ Presence-gated reconciliation loop (`lucid start`), PM gap-detection wake, Claude Code dispatch with block/timeout handling, file-backed and real Linear tracker adapters, OTel trace correlation, per-issue git worktree isolation with PR-based completion (`gh`-driven push/open/merge, auto-merge when `ReviewMode` allows it).
+- ⛔ No cross-process `status`/`stop` (needs an IPC layer, not designed yet). State is in-memory only — no restart persistence.
 
 See [`docs/FEATURES.md`](docs/FEATURES.md) for the itemized breakdown.
 
 ## Quickstart
 
-Requires `git` and an authenticated [`gh`](https://cli.github.com/) on `PATH` —
-every dispatch pushes a branch and opens/merges its PR through `gh`.
+Requires `git` and an authenticated [`gh`](https://cli.github.com/) on `PATH` — every dispatch pushes a branch and opens/merges its PR through `gh`.
 
 ```bash
 cargo build --release
@@ -49,9 +82,7 @@ Full command reference: [`docs/CLI.md`](docs/CLI.md).
 
 ## Configuration
 
-`lucid` reads a single TOML file, resolved in this order: `--config <path>`,
-then `./lucid.toml`, then `$XDG_CONFIG_HOME/lucid/config.toml`. Validate it
-with `lucid config validate` before starting the daemon.
+`lucid` reads a single TOML file, resolved in this order: `--config <path>`, then `./lucid.toml`, then `$XDG_CONFIG_HOME/lucid/config.toml`. Validate it with `lucid config validate` before starting the daemon.
 
 Minimal working example (file-backed tracker, no Linear credentials needed):
 
@@ -79,8 +110,7 @@ trace_ui_base_url = "http://localhost:6006"
 
 ### `[[harness_profiles]]`
 
-One entry per dispatch target; multiple profiles for the same harness (e.g. a
-subscription profile plus an API-key fallback) run in `priority` order.
+One entry per dispatch target; multiple profiles for the same harness (e.g. a subscription profile plus an API-key fallback) run in `priority` order.
 
 | Field | Type | Notes |
 |---|---|---|
@@ -140,9 +170,7 @@ Pointers to other repos this daemon instance watches, not full config blocks:
 path = "/home/drk/github/some-other-repo"
 ```
 
-Each pointed-to repo is expected to carry its own checked-in `lucid.project.toml`
-at that path, declaring the repo-owned settings — same `WORKFLOW.md`-style split
-as Symphony (see [`docs/wiki/architecture/multi-project.md`](docs/wiki/architecture/multi-project.md)):
+Each pointed-to repo is expected to carry its own checked-in `lucid.project.toml` at that path, declaring the repo-owned settings — same `WORKFLOW.md`-style split as Symphony (see [`docs/wiki/architecture/multi-project.md`](docs/wiki/architecture/multi-project.md)):
 
 ```toml
 project_key = "ENG-123"     # optional — tracker project to scope issues to
@@ -150,7 +178,4 @@ verify_cmd = "cargo test"   # optional — this project's verify step
 base_branch = "main"        # optional, defaults to "main"
 ```
 
-`lucid config validate` resolves and validates every configured project's
-`lucid.project.toml`, failing with a per-project error if one is missing or
-malformed. Wiring `[[projects]]` into the actual dispatch loop (today's daemon
-still only drives `[daemon].workdir`) is tracked separately.
+`lucid config validate` resolves and validates every configured project's `lucid.project.toml`, failing with a per-project error if one is missing or malformed. Wiring `[[projects]]` into the actual dispatch loop (today's daemon still only drives `[daemon].workdir`) is tracked separately.
