@@ -28,7 +28,7 @@ Validation is opt-in, not eager: `Config::validate_projects()` resolves and pars
 
 ## Daemon loop
 
-`Daemon::tick()` walks every configured project sequentially, one at a time — no second concurrency model layered on top of the daemon's existing "deliberately sequential" dispatch design (see [sandboxed-execution](sandboxed-execution.md) for when that constraint relaxes).
+`Daemon::tick()` walks every configured project sequentially, one at a time — no second concurrency model layered on top of the daemon's own mixed sequential/concurrent dispatch design (`Sandboxed` issues dispatch concurrently with each other, `Local` issues stay sequential, within one project's tick — see [sandboxed-execution](sandboxed-execution.md)).
 
 `DaemonState.runs` and `last_pm_wake` are keyed by project id (`HashMap<ProjectId, ...>`) rather than flat, so two projects' PM-wake backoff timers and retry-tracking don't collide on the same map.
 

@@ -8,6 +8,8 @@ Design for three things asked together, because they're one workflow: file ticke
 
 Don't build an ingestion path into lucid. Linear (the tracker) is already the multi-source intake point — a Discord bot, a Slack bot, an email parser, anything, can create a Linear issue directly via Linear's own API/integrations, tagged however makes sense on that side. `daemon::dispatch_approved_issues` already treats "anything in `Approved`" uniformly regardless of what created it or how — it's already source-agnostic. The only actual gap is the *outbound* side: nothing tells a human when lucid needs them.
 
+A project only opts into this externally-sourced flow by setting `ticket_source = "accepts-external"` in its `lucid.project.toml` — `OperatorOnly` (the default) stays scoped to tickets the operator files or approves themselves. `lucid config validate` refuses to pass for an `AcceptsExternal` project with no `Sandboxed` harness profile configured, since external ingestion is exactly the case that removes the operator as the sole author of what gets dispatched — see [sandboxed-execution](sandboxed-execution.md) § Trust routing.
+
 ## Notification: a `NotificationSink` trait, not a Discord-specific integration
 
 New trait, same shape as `TrackerAdapter` — pluggable, one method per lifecycle event that matters to a human:
