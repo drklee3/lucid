@@ -44,12 +44,18 @@ Grounded via `research-first` (2026-08-19), comparing three real patterns:
 
 Lucid already resolves `lucid.toml` by directory/file discovery (`--config` → `./lucid.toml` → XDG fallback), closer to the `flyctl`/`gh` shape than kubectl/Docker's. Adopting a persistent stateful context would be a new pattern for lucid to learn, and it's the one pattern whose own maintainers visibly field user confusion about it. **Decision: `lucid task create`/`approve`/`list`/`dispatch-now` gain `--project <name>`, defaulting to whichever configured project's `workdir` contains the current directory** — zero flags needed for the common case (you're sitting in the repo you mean), explicit override always available, no silent persistent state to forget.
 
+### Implemented (build order item 4, commit `813d06a`)
+
+`lucid task create`/`approve`/`reject`/`list`/`dispatch-now` all gained `--project <name>` (`src/cli.rs`). Resolution happens fresh on every invocation via `resolve_project()` (`src/main.rs`) — nothing persistent is written, matching the "not a stateful context" decision above: an explicit `--project` wins if given, otherwise whichever configured `[[projects]]` entry's `path` contains the current working directory. A project has no separate `name` field in `[[projects]]`; the CLI addresses it by the final path component of its pointer `path` (`project_name()`). Zero or more than one directory match, or a `--project` naming an unconfigured project, is a hard error listing the configured project names rather than guessing. Repos with no `[[projects]]` configured are unaffected: `--project` given with none configured errors, omitted is a no-op — identical to behavior before this change.
+
+Only `dispatch-now` changes runtime behavior on a resolved project: it applies the project's `path`/`base_branch`/`verify_cmd` as overrides for `config.daemon.workdir`/`base_branch`/`verify_cmd` before dispatching. `list`/`create`/`approve`/`reject` accept and validate `--project`, but don't yet change tracker scoping — `resolve_project()` is called for its validation/error behavior only, since the `ProjectConfig.project_key` vs. `TrackerConfig.project_key` reconciliation this would need is still the open item noted above (build order item 1's Implemented section).
+
 ## Build order
 
 1. `[[projects]]` pointer array in `lucid.toml` + per-repo checked-in config file shape (the `WORKFLOW.md`-equivalent). **Done** — see Implemented section above.
 2. `DaemonState` re-keyed by project id.
 3. `Daemon::tick()` loops projects sequentially.
-4. `--project <name>` CLI flag + directory-detection default across the `task` subcommands.
+4. `--project <name>` CLI flag + directory-detection default across the `task` subcommands. **Done** — see Implemented section above.
 5. `FileTracker` id-collision check once multiple projects can share a daemon process.
 
 (3) depends on (1) and (2); (4) is independent and can land any time after (1).
