@@ -129,3 +129,27 @@ subscription profile plus an API-key fallback) run in `priority` order.
 | `base_branch` | string | `"main"` | Branch each dispatch's worktree is created from, and PRs target. |
 | `worktree_root` | string | system temp dir | Where per-issue worktrees are created — kept outside `workdir` so they never show up in the main repo's own `git status`. |
 | `verify_cmd` | string | unset | Repo-wide default command for `ReviewMode::Agent`'s verify step (e.g. `cargo test`); a per-task `verify_cmd` overrides it. |
+
+### `[[projects]]` (optional — not yet consumed by the daemon loop)
+
+Pointers to other repos this daemon instance watches, not full config blocks:
+
+```toml
+[[projects]]
+path = "/home/drk/github/some-other-repo"
+```
+
+Each pointed-to repo is expected to carry its own checked-in `lucid.project.toml`
+at that path, declaring the repo-owned settings — same `WORKFLOW.md`-style split
+as Symphony (see [`docs/wiki/architecture/multi-project.md`](docs/wiki/architecture/multi-project.md)):
+
+```toml
+project_key = "ENG-123"     # optional — tracker project to scope issues to
+verify_cmd = "cargo test"   # optional — this project's verify step
+base_branch = "main"        # optional, defaults to "main"
+```
+
+`lucid config validate` resolves and validates every configured project's
+`lucid.project.toml`, failing with a per-project error if one is missing or
+malformed. Wiring `[[projects]]` into the actual dispatch loop (today's daemon
+still only drives `[daemon].workdir`) is tracked separately.
