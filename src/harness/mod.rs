@@ -17,8 +17,9 @@
 //! the design survey flagged as the most common real-world failure (see
 //! docs/wiki/architecture/error-stall-visibility.md).
 
+use anyhow::Context;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::time::Duration;
 use uuid::Uuid;
@@ -46,15 +47,21 @@ pub enum HarnessKind {
 /// Where a profile's dispatched process actually runs. `Sandboxed` is the only
 /// backend a profile can silently default to; `Local` (runs directly on the
 /// host, no isolation) requires the profile to also set `unsandboxed = true` —
-/// see `HarnessProfile::validate`. No real `Sandboxed` implementation exists
-/// yet (see docs/wiki/architecture/sandboxed-execution.md); this is config
-/// surface only and doesn't change `dispatch_with_fallback`'s behavior.
+/// see `HarnessProfile::validate`. `Sandboxed` runs `profile.cmd` inside
+/// `SANDBOX_IMAGE` via `docker run`, with only the dispatch's worktree (plus
+/// its git common dir, for `git commit` to work) bind-mounted — see
+/// docs/wiki/architecture/sandboxed-execution.md.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ExecutionBackend {
     #[default]
     Sandboxed,
     Local,
 }
+
+/// Docker image `Sandboxed` dispatches run in — built from
+/// `docker/sandbox/Dockerfile`, which bundles both harness CLIs
+/// (`HarnessKind::ClaudeCode`, `HarnessKind::Codex`) lucid can dispatch to.
+pub const SANDBOX_IMAGE: &str = "lucid-sandbox:latest";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HarnessProfile {
@@ -223,13 +230,53 @@ fn parse_stream_events(stdout: &str) -> (Option<BlockReason>, DispatchOutcome) {
     (block, outcome)
 }
 
+/// Where env vars and trailing CLI args from `apply_telemetry`/
+/// `apply_dispatch_flags` end up — a real host `tokio::process::Command` for
+/// `ExecutionBackend::Local`, or a `DockerArgs` buffer for `Sandboxed` (whose
+/// env vars need to become `docker run -e` flags *before* the image name,
+/// while args are the dispatched program's own args, added *after* it — two
+/// different positions in one `docker` invocation, so they can't share a
+/// single `tokio::process::Command` the way the direct-host path does).
+trait CommandSink {
+    fn env_var(&mut self, key: &str, val: &str) -> &mut Self;
+    fn add_arg(&mut self, val: &str) -> &mut Self;
+}
+
+impl CommandSink for tokio::process::Command {
+    fn env_var(&mut self, key: &str, val: &str) -> &mut Self {
+        self.env(key, val)
+    }
+    fn add_arg(&mut self, val: &str) -> &mut Self {
+        self.arg(val)
+    }
+}
+
+/// Env vars and program args for a `Sandboxed` dispatch, kept separate until
+/// `docker run` assembly since they land on opposite sides of the image name.
+#[derive(Default)]
+struct DockerArgs {
+    env: Vec<(String, String)>,
+    prog_args: Vec<String>,
+}
+
+impl CommandSink for DockerArgs {
+    fn env_var(&mut self, key: &str, val: &str) -> &mut Self {
+        self.env.push((key.to_string(), val.to_string()));
+        self
+    }
+    fn add_arg(&mut self, val: &str) -> &mut Self {
+        self.prog_args.push(val.to_string());
+        self
+    }
+}
+
 /// Tags the subprocess with the standard `OTEL_RESOURCE_ATTRIBUTES` env var (a
 /// generic `OTel` SDK var, not harness-specific) plus each harness's own telemetry
 /// on-switch. Codex ignores `OTEL_RESOURCE_ATTRIBUTES` (its `OTel` config is
 /// TOML-driven, user-level only) so it gets the OTLP endpoint via `-c` instead;
 /// per-dispatch resource tagging for Codex isn't wired up yet.
-fn apply_telemetry(
-    cmd: &mut tokio::process::Command,
+fn apply_telemetry<C: CommandSink>(
+    cmd: &mut C,
     kind: HarnessKind,
     telemetry: &TelemetryConfig,
     ticket_id: &str,
@@ -237,33 +284,33 @@ fn apply_telemetry(
 ) {
     match kind {
         HarnessKind::ClaudeCode => {
-            cmd.env("CLAUDE_CODE_ENABLE_TELEMETRY", "1")
+            cmd.env_var("CLAUDE_CODE_ENABLE_TELEMETRY", "1")
                 // Distributed tracing (spans) is a separate, off-by-default beta
                 // signal from logs/metrics — `CLAUDE_CODE_ENABLE_TELEMETRY` alone
                 // does not turn it on. Without both of these, `trace_link`'s URL
                 // points at spans that were never exported. Source:
                 // https://code.claude.com/docs/en/monitoring-usage
-                .env("CLAUDE_CODE_ENHANCED_TELEMETRY_BETA", "1")
-                .env("OTEL_TRACES_EXPORTER", "otlp")
-                .env("OTEL_LOGS_EXPORTER", "otlp")
-                .env("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
-                .env("OTEL_EXPORTER_OTLP_ENDPOINT", &telemetry.otlp_endpoint)
-                .env(
+                .env_var("CLAUDE_CODE_ENHANCED_TELEMETRY_BETA", "1")
+                .env_var("OTEL_TRACES_EXPORTER", "otlp")
+                .env_var("OTEL_LOGS_EXPORTER", "otlp")
+                .env_var("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
+                .env_var("OTEL_EXPORTER_OTLP_ENDPOINT", &telemetry.otlp_endpoint)
+                .env_var(
                     "OTEL_RESOURCE_ATTRIBUTES",
-                    format!("lucid.ticket_id={ticket_id},lucid.dispatch_id={dispatch_id}"),
+                    &format!("lucid.ticket_id={ticket_id},lucid.dispatch_id={dispatch_id}"),
                 );
             if telemetry.log_prompts {
-                cmd.env("OTEL_LOG_USER_PROMPTS", "1")
-                    .env("OTEL_LOG_TOOL_DETAILS", "1");
+                cmd.env_var("OTEL_LOG_USER_PROMPTS", "1")
+                    .env_var("OTEL_LOG_TOOL_DETAILS", "1");
             }
         }
         HarnessKind::Codex => {
-            cmd.arg("-c").arg(format!(
+            cmd.add_arg("-c").add_arg(&format!(
                 "otel.exporter={{otlp-grpc={{endpoint=\"{}\"}}}}",
                 telemetry.otlp_endpoint
             ));
             if telemetry.log_prompts {
-                cmd.arg("-c").arg("otel.log_user_prompt=true");
+                cmd.add_arg("-c").add_arg("otel.log_user_prompt=true");
             }
         }
     }
@@ -278,11 +325,118 @@ fn apply_telemetry(
 /// plan tier, so *some* explicit grant is required or the first tool call blocks
 /// waiting for an approval nobody's there to give. See
 /// docs/wiki/architecture/harness-dispatch.md.
-fn apply_dispatch_flags(cmd: &mut tokio::process::Command, kind: HarnessKind, extra_args: &[&str]) {
+fn apply_dispatch_flags<C: CommandSink>(cmd: &mut C, kind: HarnessKind, extra_args: &[&str]) {
     if kind == HarnessKind::ClaudeCode {
-        cmd.args(["--output-format", "stream-json", "--verbose"]);
-        cmd.args(extra_args);
+        for flag in ["--output-format", "stream-json", "--verbose"] {
+            cmd.add_arg(flag);
+        }
+        for arg in extra_args {
+            cmd.add_arg(arg);
+        }
     }
+}
+
+/// `git rev-parse --path-format=absolute --git-common-dir` in `workdir` — the
+/// shared object/ref store a linked worktree's `git commit` writes into (a
+/// worktree's own `.git` is just a pointer file; objects and refs live in the
+/// main repo's `.git`). `None` if `workdir` isn't a git repo or `git` isn't on
+/// `PATH` — the sandbox falls back to mounting only the worktree itself, which
+/// works for a caller that never runs `git commit` (e.g. tests).
+async fn git_common_dir(workdir: &Path) -> Option<PathBuf> {
+    let output = tokio::process::Command::new("git")
+        .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .current_dir(workdir)
+        .output()
+        .await
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!path.is_empty()).then(|| PathBuf::from(path))
+}
+
+/// The host uid:gid running lucid itself, via `id -u`/`id -g` rather than
+/// `libc::getuid()` — this crate forbids `unsafe_code` outright. `None` if
+/// `id` isn't on `PATH` (non-Linux), in which case the container runs as its
+/// image default (root), which is fine for CI/tests but leaves any files it
+/// writes into the mounted worktree root-owned on the host.
+async fn host_uid_gid() -> Option<(String, String)> {
+    let uid = tokio::process::Command::new("id")
+        .arg("-u")
+        .output()
+        .await
+        .ok()?;
+    let gid = tokio::process::Command::new("id")
+        .arg("-g")
+        .output()
+        .await
+        .ok()?;
+    if !uid.status.success() || !gid.status.success() {
+        return None;
+    }
+    Some((
+        String::from_utf8_lossy(&uid.stdout).trim().to_string(),
+        String::from_utf8_lossy(&gid.stdout).trim().to_string(),
+    ))
+}
+
+/// Builds the `docker run` invocation for an `ExecutionBackend::Sandboxed`
+/// dispatch: `profile.cmd`/`profile.args` run inside `SANDBOX_IMAGE`, with
+/// only `workdir` (the dispatch's own worktree) and its git common dir
+/// bind-mounted at matching absolute host paths — nothing else of the host
+/// filesystem is visible inside the container. Network stays on Docker's
+/// default bridge (outbound-only NAT) so the harness can still reach its
+/// model API. See docs/wiki/architecture/sandboxed-execution.md.
+///
+/// # Errors
+/// Returns an error if `workdir` can't be canonicalized (e.g. it doesn't
+/// exist).
+async fn build_sandboxed_command(
+    profile: &HarnessProfile,
+    workdir: &Path,
+    telemetry: &TelemetryConfig,
+    ticket_id: &str,
+    dispatch_id: &str,
+    claude_extra_args: &[&str],
+    prompt: &str,
+) -> anyhow::Result<tokio::process::Command> {
+    let workdir_abs = std::fs::canonicalize(workdir)
+        .with_context(|| format!("resolving sandbox workdir {}", workdir.display()))?;
+
+    let mut spec = DockerArgs {
+        env: Vec::new(),
+        prog_args: profile.args.clone(),
+    };
+    apply_telemetry(&mut spec, profile.kind, telemetry, ticket_id, dispatch_id);
+    apply_dispatch_flags(&mut spec, profile.kind, claude_extra_args);
+    if profile.kind == HarnessKind::ClaudeCode {
+        spec.add_arg("--");
+    }
+    spec.add_arg(prompt);
+
+    let mut cmd = tokio::process::Command::new("docker");
+    cmd.kill_on_drop(true);
+    cmd.arg("run").arg("--rm").arg("-i");
+    cmd.arg("--network").arg("bridge");
+    if let Some((uid, gid)) = host_uid_gid().await {
+        cmd.arg("-u").arg(format!("{uid}:{gid}"));
+    }
+    for (key, val) in &spec.env {
+        cmd.arg("-e").arg(format!("{key}={val}"));
+    }
+    cmd.arg("-v").arg(format!("{0}:{0}", workdir_abs.display()));
+    if let Some(git_dir) = git_common_dir(&workdir_abs).await {
+        if git_dir != workdir_abs && !git_dir.starts_with(&workdir_abs) {
+            cmd.arg("-v").arg(format!("{0}:{0}", git_dir.display()));
+        }
+    }
+    cmd.arg("-w").arg(workdir_abs.display().to_string());
+    cmd.arg(SANDBOX_IMAGE);
+    cmd.arg(&profile.cmd);
+    cmd.args(&spec.prog_args);
+
+    Ok(cmd)
 }
 
 /// Everything one `dispatch_with_fallback` call needs — bundled into a struct
@@ -324,28 +478,45 @@ pub async fn dispatch_with_fallback(req: DispatchRequest<'_>) -> anyhow::Result<
     let mut last_block: Option<(String, BlockReason)> = None;
 
     for profile in ordered {
-        let mut cmd = tokio::process::Command::new(&profile.cmd);
-        cmd.current_dir(req.workdir);
-        cmd.kill_on_drop(true);
-        cmd.args(&profile.args);
-        apply_telemetry(
-            &mut cmd,
-            profile.kind,
-            req.telemetry,
-            req.ticket_id,
-            &dispatch_id,
-        );
-        apply_dispatch_flags(&mut cmd, profile.kind, req.claude_extra_args);
-        // Claude Code's arg parser can otherwise swallow the prompt into a
-        // preceding flag's value (observed with `--allowedTools <list>`: the
-        // list's parser consumes the next bare token too, so `--print` then sees
-        // no prompt at all and exits before ever emitting a `result` event). `--`
-        // forces everything after it to be a positional argument, defusing this
-        // regardless of which flags happen to precede the prompt.
-        if profile.kind == HarnessKind::ClaudeCode {
-            cmd.arg("--");
-        }
-        cmd.arg(req.prompt);
+        let mut cmd = match profile.execution_backend {
+            ExecutionBackend::Local => {
+                let mut cmd = tokio::process::Command::new(&profile.cmd);
+                cmd.current_dir(req.workdir);
+                cmd.kill_on_drop(true);
+                cmd.args(&profile.args);
+                apply_telemetry(
+                    &mut cmd,
+                    profile.kind,
+                    req.telemetry,
+                    req.ticket_id,
+                    &dispatch_id,
+                );
+                apply_dispatch_flags(&mut cmd, profile.kind, req.claude_extra_args);
+                // Claude Code's arg parser can otherwise swallow the prompt into a
+                // preceding flag's value (observed with `--allowedTools <list>`: the
+                // list's parser consumes the next bare token too, so `--print` then sees
+                // no prompt at all and exits before ever emitting a `result` event). `--`
+                // forces everything after it to be a positional argument, defusing this
+                // regardless of which flags happen to precede the prompt.
+                if profile.kind == HarnessKind::ClaudeCode {
+                    cmd.arg("--");
+                }
+                cmd.arg(req.prompt);
+                cmd
+            }
+            ExecutionBackend::Sandboxed => {
+                build_sandboxed_command(
+                    profile,
+                    req.workdir,
+                    req.telemetry,
+                    req.ticket_id,
+                    &dispatch_id,
+                    req.claude_extra_args,
+                    req.prompt,
+                )
+                .await?
+            }
+        };
 
         let output = match tokio::time::timeout(req.timeout, cmd.output()).await {
             Ok(result) => result?,
@@ -470,6 +641,13 @@ mod tests {
         // otherwise be parsed as invalid arguments by `sleep` itself and make it
         // exit immediately instead of actually hanging. `sh -c` ignores trailing
         // positional args the script body doesn't reference.
+        //
+        // `Local`/`unsandboxed`: this test is exercising the generic
+        // timeout/kill mechanism, not sandboxing — running it through Docker
+        // would make the unit test suite depend on Docker being installed and
+        // `SANDBOX_IMAGE` already built. The sandboxed path's own isolation is
+        // covered by a separate live test (see
+        // docs/wiki/architecture/sandboxed-execution.md), not a `cargo test`.
         let profiles = [HarnessProfile {
             name: "hangs".into(),
             kind: HarnessKind::ClaudeCode,
@@ -477,8 +655,8 @@ mod tests {
             args: vec!["-c".into(), "sleep 30".into()],
             auth_mode: AuthMode::Subscription,
             priority: 1,
-            execution_backend: ExecutionBackend::Sandboxed,
-            unsandboxed: false,
+            execution_backend: ExecutionBackend::Local,
+            unsandboxed: true,
         }];
         let telemetry = telemetry();
         let req = DispatchRequest {
