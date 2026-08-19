@@ -24,7 +24,7 @@ lucid task create <title>            File a new proposal directly
 lucid task list                      List tracker issues in a given decision state
 lucid task approve <issue-id>        Approve an issue for dispatch
 lucid task reject <issue-id>         Reject an issue
-lucid task dispatch-now <issue-id>   Dispatch one already-approved issue immediately
+lucid task dispatch-now <issue-id>   Dispatch one already-approved issue now, instead of waiting for the next tick
 ```
 
 ## `lucid start`
@@ -193,10 +193,14 @@ currently updatable from the CLI afterward.
 
 `lucid task dispatch-now <issue-id>` runs the *exact* dispatch path the daemon's
 regular tick would run for that issue (`worker::dispatch_and_finalize`, shared by
-both callers) — it changes **when** approved work runs (now, instead of waiting for
-the next tick + presence gate), never **whether** it's allowed to. It requires the
-issue already be in the `Approved` state in the tracker and errors out otherwise,
-pointing at `lucid task approve` — it is not an independent trigger mechanism.
+both callers) — it changes **when** approved work runs (now, instead of waiting up
+to `tick_interval_secs` for the next tick), never **whether** it's allowed to.
+Dispatching an `Approved` issue is no longer presence-gated at all (see
+`docs/wiki/architecture/presence-detection.md` § What presence gates), so
+`dispatch-now` is purely a latency shortcut, not a presence bypass. It requires
+the issue already be in the `Approved` state in the tracker and errors out
+otherwise, pointing at `lucid task approve` — it is not an independent trigger
+mechanism.
 
 ---
 

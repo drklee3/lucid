@@ -1,5 +1,7 @@
-//! The reconciliation loop — presence-gated dispatch of tracker-approved issues,
-//! plus periodic PM wake cycles. See docs/FEATURES.md § Reconciliation loop and
+//! The reconciliation loop — dispatch of tracker-approved issues (presence-
+//! independent: an `Approved` issue already cleared its human gate), plus
+//! periodic, presence-gated PM wake cycles. See docs/FEATURES.md § Reconciliation
+//! loop and
 //! docs/wiki/architecture/observability.md (v1 is CLI-only: this loop prints its
 //! own activity to stdout rather than serving a dashboard or an IPC status query).
 //!
@@ -147,10 +149,18 @@ impl Daemon {
     }
 
     /// One reconciliation pass: reconcile any `NeedsReview` issues against their
-    /// PR's merge status, resolve presence, and if autonomous, dispatch any
-    /// newly-approved issues plus run a PM wake if its interval has elapsed.
+    /// PR's merge status, dispatch any newly-approved issues, resolve presence,
+    /// and if autonomous, run a PM wake if its interval has elapsed.
+    ///
+    /// Presence only gates `maybe_wake_pm` — the PM proactively investigating and
+    /// filing *new* proposals unsupervised. It does not gate dispatching an
+    /// already-`Approved` issue: a human already reviewed and approved that
+    /// specific ticket, so running it isn't unsupervised action the same way a PM
+    /// wake is. See docs/wiki/architecture/presence-detection.md § What presence
+    /// gates.
     async fn tick(&self) -> anyhow::Result<()> {
         self.reconcile_needs_review().await?;
+        self.dispatch_approved_issues().await?;
 
         let idle_threshold =
             Duration::from_secs(u64::from(self.presence_cfg.idle_threshold_minutes) * 60);
@@ -164,7 +174,6 @@ impl Daemon {
             return Ok(());
         }
 
-        self.dispatch_approved_issues().await?;
         self.maybe_wake_pm().await?;
         Ok(())
     }
@@ -330,6 +339,11 @@ mod tests {
     struct MockTracker {
         notes: Mutex<Vec<(String, String)>>,
         decisions: Mutex<Vec<(String, DecisionState)>>,
+        /// Every `DecisionState` queried, in call order — shared via `Arc` so a
+        /// test can keep a handle after the tracker is boxed into a `Daemon`, to
+        /// assert a query happened without needing a real dispatch/PM-wake path
+        /// behind it.
+        queried_states: std::sync::Arc<Mutex<Vec<DecisionState>>>,
     }
 
     #[async_trait]
@@ -350,9 +364,10 @@ mod tests {
         }
         async fn query_by_decision_state(
             &self,
-            _state: DecisionState,
+            state: DecisionState,
         ) -> anyhow::Result<Vec<TrackerIssue>> {
-            unimplemented!("not exercised by these tests")
+            self.queried_states.lock().unwrap().push(state);
+            Ok(Vec::new())
         }
         async fn query_similar(&self, _title: &str) -> anyhow::Result<Vec<TrackerIssue>> {
             unimplemented!("not exercised by these tests")
@@ -434,5 +449,95 @@ mod tests {
 
         assert!(tracker.decisions.lock().unwrap().is_empty());
         assert!(tracker.notes.lock().unwrap().is_empty());
+    }
+
+    /// Builds a `Daemon` directly (bypassing `Config`/`Daemon::new`) around the
+    /// given tracker, with presence forced via the override file so tests don't
+    /// depend on real idle sources. `unique` keeps each test's on-disk override/
+    /// audit/state paths from colliding when tests run concurrently.
+    fn test_daemon(
+        tracker: MockTracker,
+        override_mode: presence::override_file::OverrideMode,
+        unique: &str,
+    ) -> Daemon {
+        let override_path =
+            std::env::temp_dir().join(format!("lucid-daemon-test-override-{unique}"));
+        let override_file = OverrideFile::new(override_path.clone());
+        override_file.write(override_mode).unwrap();
+
+        Daemon {
+            tracker: Box::new(tracker),
+            profiles: Vec::new(),
+            observability: ObservabilityConfig {
+                otlp_endpoint: "http://localhost:4317".to_string(),
+                log_prompts: false,
+                trace_ui_base_url: "http://localhost:6006".to_string(),
+                trace_ui_project_id: None,
+            },
+            presence_sources: PresenceSourceList::new(Vec::new()),
+            presence_cfg: PresenceConfig {
+                idle_threshold_minutes: 20,
+                proposal_cap_per_wake: 3,
+                override_path: Some(override_path),
+            },
+            audit_log: AuditLog::new(
+                std::env::temp_dir().join(format!("lucid-daemon-test-audit-{unique}")),
+            ),
+            override_file,
+            workdir: std::env::temp_dir(),
+            base_branch: "main".to_string(),
+            worktree_root: std::env::temp_dir(),
+            verify_cmd: None,
+            tick_interval: Duration::from_secs(60),
+            stall_timeout: Duration::from_secs(5),
+            pm_wake_interval: Duration::from_secs(3600),
+            runs: Mutex::new(HashMap::new()),
+            last_pm_wake: Mutex::new(None),
+            last_mode: Mutex::new(None),
+            state_path: std::env::temp_dir().join(format!("lucid-daemon-test-state-{unique}.json")),
+        }
+    }
+
+    #[tokio::test]
+    async fn approved_issue_dispatch_is_not_gated_by_presence() {
+        let tracker = MockTracker::default();
+        let queried_states = tracker.queried_states.clone();
+        let daemon = test_daemon(
+            tracker,
+            presence::override_file::OverrideMode::Active,
+            "dispatch-not-gated",
+        );
+
+        daemon.tick().await.unwrap();
+
+        assert_eq!(
+            *daemon.last_mode.lock().unwrap(),
+            Some(PresenceMode::Active)
+        );
+        // dispatch_approved_issues runs unconditionally: the tracker was queried
+        // for Approved issues even though presence resolved to Active.
+        assert!(
+            queried_states
+                .lock()
+                .unwrap()
+                .contains(&DecisionState::Approved)
+        );
+    }
+
+    #[tokio::test]
+    async fn pm_wake_does_not_fire_during_an_active_tick() {
+        let daemon = test_daemon(
+            MockTracker::default(),
+            presence::override_file::OverrideMode::Active,
+            "pm-wake-gated",
+        );
+
+        daemon.tick().await.unwrap();
+
+        assert_eq!(
+            *daemon.last_mode.lock().unwrap(),
+            Some(PresenceMode::Active)
+        );
+        assert!(daemon.last_pm_wake.lock().unwrap().is_none());
     }
 }

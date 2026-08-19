@@ -268,8 +268,8 @@ pub async fn run_dispatch(
 /// whatever it committed, finalizes the tracker's decision state per
 /// `issue.review` (merging the PR when that decision is `Done`), and always tears
 /// the worktree back down. Shared by `daemon::dispatch_approved_issues` (the
-/// regular presence-gated tick) and `lucid task dispatch-now` (an on-demand
-/// trigger of the *exact same* path, not a separate one) — see
+/// regular tick, presence-independent) and `lucid task dispatch-now` (an
+/// on-demand trigger of the *exact same* path, not a separate one) — see
 /// docs/wiki/architecture/worker-completion.md.
 ///
 /// # Errors
