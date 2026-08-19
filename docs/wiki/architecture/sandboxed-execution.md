@@ -27,10 +27,7 @@ pub enum ExecutionBackend {
 
 `lucid.toml`'s `[[harness_profiles]]` entries default to requiring a sandbox; running one locally needs an explicit, unmistakably-named field — `unsandboxed = true`, not `execution = "local"` — so a config file reads as a decision, not a neutral setting someone toggled without noticing what it traded away.
 
-Two real `SandboxKind` candidates, **neither verified yet**:
-
-- **Claude Code's own `--cloud` flag** (`claude --cloud [description|session_id|url]`, surfaced in `claude --help` output this session but never followed up on) — if it composes with the flags lucid already depends on (`--allowedTools`, `--permission-mode`, `--output-format stream-json`, `--resume` for the [session-resume design](human-in-the-loop.md)), this is the cheapest possible sandboxed backend: Anthropic runs the isolation, zero new infrastructure to operate. **Needs its own `research-first` pass before being trusted** — this page only confirms the flag exists, not its actual behavior/compatibility.
-- **Self-hosted Docker/microVM** — more control, works for Codex too (not Claude-Code-specific), but it's real infrastructure lucid now owns and operates.
+**Decided: self-hosted Docker (or microVM), not Claude Code's `--cloud` flag.** `--cloud` was a candidate raised mid-design (surfaced in `claude --help` output, never independently verified) but deliberately dropped — lucid stays harness-agnostic (Codex is a first-class profile kind, not a hypothetical), and `--cloud` would only ever cover the Claude Code half of that. Docker/microVM costs real infrastructure lucid now owns and operates, but it's the only candidate that works uniformly across every `HarnessKind`, which matters more than the zero-infra convenience `--cloud` would have offered for one harness only.
 
 ## Trust routing: a config-validated rail, not a convention
 
@@ -42,10 +39,9 @@ Any [project](multi-project.md) that accepts externally-triggered tickets must h
 
 ## Build order
 
-1. Research `--cloud`'s actual flag compatibility (its own `research-first` pass — this page explicitly does not claim that's settled).
-2. `ExecutionBackend` enum + config shape (`unsandboxed = true` opt-out), `Local` behaves identically to today — no behavior change until a `Sandboxed` backend actually exists.
-3. First real `Sandboxed` implementation (whichever candidate above survives step 1).
-4. `lucid config validate` trust-routing rail (depends on [multi-project](multi-project.md)'s ticket-source concept existing first).
-5. Relax `daemon.rs`'s sequential loop for `Sandboxed` dispatches specifically.
+1. `ExecutionBackend` enum + config shape (`unsandboxed = true` opt-out), `Local` behaves identically to today — no behavior change until a `Sandboxed` backend actually exists.
+2. First real `Sandboxed` implementation: Docker/microVM.
+3. `lucid config validate` trust-routing rail (depends on [multi-project](multi-project.md)'s ticket-source concept existing first).
+4. Relax `daemon.rs`'s sequential loop for `Sandboxed` dispatches specifically.
 
 Each step is gated on the one before it; nothing here is built yet.
