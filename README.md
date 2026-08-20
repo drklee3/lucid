@@ -82,7 +82,6 @@ export PATH="$PWD/target/release:$PATH"
 # write lucid.toml — see Configuration below for what goes in it
 docker compose up -d          # optional: Arize Phoenix, for trace correlation
 lucid config validate
-lucid presence override autonomous   # logind auto-detection isn't wired up yet
 lucid start --foreground
 ```
 
