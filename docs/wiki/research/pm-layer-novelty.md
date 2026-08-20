@@ -1,6 +1,6 @@
 # Is the Proactive-PM Layer Genuinely Novel?
 
-**Verdict: essentially yes, with one small caveat.** Across every facet searched — orchestration platforms, PM-agent products, and the practitioner/critique literature — no mature, well-adopted system does what lucid's [PM agent](../architecture/pm-scope.md) does: investigating a repo on its own initiative (no ticket, no alert, no human-supplied seed) and originating new work-item proposals grounded in gap analysis.
+**Verdict: essentially yes, with one small caveat.** Across every facet searched — orchestration platforms, PM-agent products, and the practitioner/critique literature — no mature, well-adopted system does proactive gap-detection: investigating a repo on its own initiative (no ticket, no alert, no human-supplied seed) and originating new work-item proposals grounded in gap analysis. lucid deliberately does not build this component itself — see [overview](../architecture/overview.md) — but the finding below is why, if someone wanted one, building it (as an external tool that files tickets through the tracker) rather than adopting an existing product is the only real option today.
 
 ## Where existing coverage stops
 
@@ -13,4 +13,4 @@
 
 ## Conclusion
 
-If a genuine category-(c) proactive-PM agent is wanted, the honest framing is "build it," not "adopt it" — there is no mature open-source or well-adopted commercial project to fork or integrate, and the one small startup doing something adjacent (GitAgents) has not been independently verified. This is the direct grounding for why lucid exists as a build, not an integration.
+If a genuine category-(c) proactive-PM agent is wanted, the honest framing is "build it," not "adopt it" — there is no mature open-source or well-adopted commercial project to fork or integrate, and the one small startup doing something adjacent (GitAgents) has not been independently verified. lucid itself is that kind of build for the layer above the harness (human-approval gate, sandboxed dispatch, reconciliation) — but not for this piece: a proactive-PM layer stays a separate, external build that talks to the same tracker, not a component inside lucid.

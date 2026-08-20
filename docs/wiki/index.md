@@ -11,13 +11,10 @@ Grouped by primitive category — see [overview](architecture/overview.md) § Co
 **Start here**: [overview](architecture/overview.md) — system concept, core roles, key constraints, the categorized component diagram, the standalone-orchestrator correction. [tech-stack](architecture/tech-stack.md) — why Rust, crate choices.
 
 **Pipeline stages** (the daemon's own control flow, not swappable):
-- [pm-scope](architecture/pm-scope.md) — gap-detection, not open-ended ideation; PM investigation-on-wake scope
-- [research-agent](architecture/research-agent.md) — tiered validation depth before the PM files a proposal
 - [agent-handoff](architecture/agent-handoff.md) — the frontmatter contract the Worker parses deterministically
 - [worker-completion](architecture/worker-completion.md) — per-issue git worktree isolation + `gh`-driven PR completion, `ReviewMode` (auto/human/agent) deciding who merges, and the presence-independent tick step that reconciles `NeedsReview` against the PR's own merge status
 - [symphony-patterns](architecture/symphony-patterns.md) — mechanisms borrowed directly from OpenAI Symphony
 - [state-machine-gaps](architecture/state-machine-gaps.md) — missing states found via cross-system comparison
-- [dedup-death-loop](architecture/dedup-death-loop.md) — the single most important piece of state in the system
 - [review-rework-ux](architecture/review-rework-ux.md) — the undecided auto-resume-vs-explicit-trigger fork
 
 **Pluggable backends** (trait + config-selected implementation — `TrackerAdapter`, `PresenceSource`, `ExecutionBackend`, `NotificationSink`):
@@ -43,7 +40,7 @@ Grouped by primitive category — see [overview](architecture/overview.md) § Co
 ## Research (`research/`)
 
 - [prior-art-landscape](research/prior-art-landscape.md) — the full systems-survey table
-- [pm-layer-novelty](research/pm-layer-novelty.md) — verdict: the proactive-PM layer is genuinely novel
+- [pm-layer-novelty](research/pm-layer-novelty.md) — verdict: proactive gap-detection is genuinely novel and undersolved — and why lucid still keeps it external rather than building it in
 - [practitioner-reality](research/practitioner-reality.md) — what actually happens running these systems unattended
 - [risks-and-critiques](research/risks-and-critiques.md) — the strongest skeptical arguments, with rebuttals
 - [matplotlib-incident](research/matplotlib-incident.md) — the sharpest documented no-per-action-review failure

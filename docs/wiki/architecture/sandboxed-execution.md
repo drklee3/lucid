@@ -1,6 +1,6 @@
 # Sandboxed Execution: Where a Dispatch Actually Runs
 
-Today, every dispatch — Worker, PM investigation, Agent reviewer — runs `claude -p` directly on the host machine via `tokio::process::Command`, inside a per-issue git worktree (`worktree::create`). The worktree is filesystem isolation for *which files get touched*; it is not process/kernel isolation. The only thing standing between an unattended `--permission-mode auto` Worker dispatch and the actual host is Claude Code's own permission classifier — there is no hard sandbox boundary underneath it.
+Today, every dispatch — Worker, Agent reviewer — runs `claude -p` directly on the host machine via `tokio::process::Command`, inside a per-issue git worktree (`worktree::create`). The worktree is filesystem isolation for *which files get touched*; it is not process/kernel isolation. The only thing standing between an unattended `--permission-mode auto` Worker dispatch and the actual host is Claude Code's own permission classifier — there is no hard sandbox boundary underneath it.
 
 That was an acceptable gap while every ticket originated from the operator themselves (self-authored, filed and approved by the same person running the daemon). It stops being acceptable once tickets can be externally triggered — [ticket ingestion via the tracker](human-in-the-loop.md) means a teammate's Discord message can become a `Pending` proposal without the operator writing a word of it. Approving that proposal still requires a human, but once approved, dispatch runs exactly as unsandboxed as anything else.
 

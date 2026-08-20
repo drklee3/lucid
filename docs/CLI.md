@@ -12,8 +12,6 @@ lucid stop                           Stop a running daemon
 lucid status                         List running/blocked/retrying agents
 lucid show <worker-id>               Inspect one worker's session in detail
 
-lucid pm wake                        Manually trigger a PM gap-detection wake cycle
-
 lucid presence status                Show current presence mode and source readings
 lucid presence override <mode>       Force presence mode (active | autonomous | auto)
 
@@ -29,7 +27,7 @@ lucid task dispatch-now <issue-id>   Dispatch one already-approved issue now, in
 
 ## `lucid start`
 
-Starts the orchestrator: presence watcher, reconciliation tick, PM wake scheduling.
+Starts the orchestrator: presence watcher, reconciliation tick.
 
 ```
 lucid start [--foreground] [--config <path>]
@@ -84,19 +82,6 @@ lines, tracker issue it's tied to.
 lucid show <worker-id> [--format table|json] [--log-lines <n>]
 ```
 
-## `lucid pm wake`
-
-Manually trigger a PM gap-detection cycle — for testing without waiting on the
-presence gate and wake interval.
-
-```
-lucid pm wake [--respect-presence] [--dry-run]
-```
-
-| Flag | Default | Meaning |
-|---|---|---|
-| `--respect-presence` | off | By default, manual wake bypasses the presence gate (it's a deliberate manual trigger). Pass this to require the normal autonomous-mode gate anyway. |
-| `--dry-run` | off | Run the gap-detection pass and print what *would* be filed, without calling `create_proposal`. |
 
 ## `lucid presence status`
 
@@ -163,11 +148,10 @@ lucid task dispatch-now <issue-id> [--config <path>]
 | `--state` | `approved` | Which decision state to list. Only the states with a CLI-reachable meaning today — `StaleClosed` (auto-stale-close, not built yet — see `docs/FEATURES.md` § Tracker adapter) isn't exposed here. |
 | `--format` | `table` | `table` for human reading, `json` for scripting. |
 
-`lucid task create` files a new `Proposal` directly through the tracker adapter —
-the same `create_proposal` write path `pm::wake` uses, without its
-`query_similar` dedup check (a human typing a title explicitly isn't the
-runaway re-filing case that check guards against). Every flag but `<title>` is
-optional: `--summary` defaults to the title, `--effort` defaults to `medium`,
+`lucid task create` files a new `Proposal` directly through the tracker adapter
+via `create_proposal` — no dedup check against existing issues; the caller
+(human, or an external tool proposing work) is responsible for not re-filing
+something that already exists. Every flag but `<title>` is optional: `--summary` defaults to the title, `--effort` defaults to `medium`,
 `--task-type` defaults to `task`, `--review` defaults to `auto`. `--why-now`,
 `--target-path`, and `--acceptance-criteria` are each repeatable. On success it
 prints the new issue id (e.g. `LOCAL-1` for the file backend) — pass that id to

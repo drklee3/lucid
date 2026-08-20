@@ -1,12 +1,21 @@
 # lucid
 
-Daemon that dispatches your approved tickets to a coding harness in the background, in parallel with whatever you're working on yourself.
-
 Named for lucid dreaming: it acts on its own, but stays directed within bounds you set — never fully unsupervised.
+
+Coding-agent systems stack into layers — model, harness, what a harness does with sub-agents inside one task, what strings tasks together into a project, and who decides a task should exist at all. Each layer swaps independently of the ones around it. lucid owns exactly one of them: it's the part that takes a queue of human-approved tickets and turns them into an ongoing stream of dispatched, reviewed, merged PRs — nothing above that (deciding what's worth building) and nothing below it (how any single task actually gets solved).
+
+| Layer | What it is | Swappable via | lucid's relationship |
+|---|---|---|---|
+| Task origination | Deciding a ticket should exist | Human, or any external cron/agent, filing through the tracker | Can't tell them apart — doesn't try to |
+| **Inter-task orchestration** | **Sequencing many one-shot tasks into an ongoing project** | **lucid itself** | **Lives here** — queue → worktree → sandboxed dispatch → PR, one ticket at a time |
+| Intra-task composition | How one task actually gets solved inside a harness — one model, or a harness spawning its own sub-agents | The harness's own internal design | Invisible — one dispatch, one process, one diff back either way |
+| Agent harness | Bounded process: starts, does a task, exits | `HarnessProfile.cmd`/`args` (`claude`, `codex`, `hermes`, pi, ...) | Spawns it, sandboxes around it, never reaches inside it |
+| LLM API | The model | Whatever the harness calls | Never calls one directly — model-agnostic by construction |
+
+Concretely, that means:
 
 - **Dispatches** approved tickets to a coding harness (`claude -p`, `codex exec`, ...) in an isolated git worktree, sandboxed by default — runs continuously, whether you're at the keyboard or not, since each ticket was already human-approved.
 - **Reconciles**: retries stalled runs, opens/merges PRs via `gh`, reports back.
-- **Optionally investigates** the repo against a stated goal and flags gaps as new proposals for you to approve — this proactive gap-finding is presence-gated, only running once you've gone idle, unlike ticket dispatch itself.
 - Tracker-agnostic, harness-agnostic, model-agnostic by design.
 
 See [`docs/wiki/index.md`](docs/wiki/index.md) for full architecture and resolved decisions, and [`docs/FEATURES.md`](docs/FEATURES.md) for what's built vs. still open.
@@ -23,33 +32,28 @@ flowchart TB
             worktree["Per-issue git worktree"] --> exec["Harness dispatch\nsandboxed by default"] --> pr["PR open / merge\nvia gh"]
         end
 
-        presence["Presence watcher\nidle/active detection"]
-
-        subgraph pm_block["Proposal pipeline (optional, presence-gated)"]
-            direction LR
-            pm["PM agent\ngap detection on wake"] --> research["Research agent\nfeasibility validation"]
-        end
+        presence["Presence watcher\nidle/active detection\n(feeds the audit log)"]
 
         reconcile["Reconciliation loop\npoll · stall-detect · retry"]
 
-        presence -->|autonomous mode| pm_block
-        research -->|proposal filed| tracker
         tracker -->|approved issue| worker_block
         reconcile --> worker_block
         reconcile --> tracker
     end
 
+    external["Human, or any external\ncron/agent proposing work"]
     tracker[("Tracker adapter\nLinear / file-backed")]
     harness[["Coding harness\nclaude / codex / ..."]]
     github[["GitHub (gh)"]]
     otel[("OTel / Phoenix\ntrace correlation")]
 
+    external -->|files a ticket| tracker
     exec <-->|subprocess| harness
     pr <--> github
     exec -.->|traces| otel
 
     classDef ext fill:#e8e8e8,stroke:#888,color:#333;
-    class tracker,harness,github,otel ext;
+    class tracker,harness,github,otel,external ext;
 ```
 
 One small standalone process, no framework. Two other things worth knowing at a glance:
@@ -103,7 +107,6 @@ file_path = "state/tracker.json"
 
 [presence]
 idle_threshold_minutes = 20
-proposal_cap_per_wake = 3
 
 [observability]
 otlp_endpoint = "http://localhost:4317"

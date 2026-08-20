@@ -14,21 +14,17 @@ listed separately and are explicitly out of v1.
 - [x] Debounce: idle must sustain past the full threshold (default 20 min), not just cross it, before flipping to autonomous (`presence::resolve`)
 - [x] Mode-transition audit log — every flip is logged (trust-critical, needs an audit trail)
 
-## PM / gap-detection
+## PM / gap-detection, Research agent — out of scope
 
-- [ ] Watermark record (repo file or tracker-side): last commit SHA reviewed, last wake timestamp, proposals-filed-this-week count — today's wake dispatches a fresh investigation each time, no incremental bounding yet
-- [ ] Wake procedure's `git log <watermark>..HEAD` bounding, open-PR overlap check — not built; the prompt asks the harness to look at git history itself, unbounded
-- [x] Gap-detection reasoning: dispatch to a configured harness, read-mostly and low-stakes by design (`src/pm.rs` — restricted `--allowedTools`, not the Worker's `auto` permission mode)
-- [x] Proposal cap per wake cycle (`presence.proposal_cap_per_wake`, default suggested 3)
-- [ ] Stub-only proposal format — title + "this goal seems to imply X isn't tracked yet, want to define it?", explicitly not a full spec — today's proposals are full `Proposal` structs, not gap-flag stubs
-- [x] Dedup check before filing, via the tracker adapter's `query_similar` (`pm::wake`)
-
-## Research agent
-
-- [ ] Default tier (cheap): dependency/API existence check, in-repo prior-art grep, convention lint against CLAUDE.md/STYLE.md if present
-- [ ] Deep tier (opt-in via PM tag on high-uncertainty/high-blast-radius proposals): throwaway-workspace prototype spike
-- [ ] Confidence score returned alongside findings
-- [ ] PM filing threshold: below it, discard rather than file, but still log to the rejected-ideas record so the same idea isn't re-investigated next wake
+Proactive gap-detection ("what should get built next") and pre-filing research
+validation are not lucid components. lucid's job is the layer above a coding
+harness: the human-approval gate, sandboxed dispatch, and reconciliation.
+Anything that wants to propose work — a human, a cron job, an external
+agent — files a ticket through the tracker like any other caller of
+`TrackerAdapter::create_proposal` (`lucid task create` from the CLI, or
+directly against the tracker's own API); lucid has no opinion on how that
+ticket got written or what dedup/research happened before it existed. See
+`docs/wiki/architecture/overview.md`.
 
 ## Worker / dispatch
 
@@ -53,23 +49,22 @@ listed separately and are explicitly out of v1.
 
 ## Tracker adapter
 
-- [x] `TrackerAdapter` trait: `create_proposal`, `set_decision_state`, `query_by_decision_state`, `query_similar`, `attach_note`, `list_comments`
+- [x] `TrackerAdapter` trait: `create_proposal`, `set_decision_state`, `query_by_decision_state`, `attach_note`, `list_comments`
 - [x] Approval-time clarification: `list_comments` fetched fresh before every dispatch and folded into `worker::dispatch_prompt` as a `## Comments` section — see `docs/wiki/architecture/human-in-the-loop.md`
 - [x] Linear implementation (GraphQL via `reqwest`, typed request/response structs via `serde` — see `docs/wiki/architecture/tracker-adapter.md` § `LinearAdapter` implementation notes)
-- [x] File-backed local implementation (`src/tracker/file.rs`) — not in the original design, added so the dispatch/PM loop could be proven end-to-end without Linear credentials; a real backend, not a mock
+- [x] File-backed local implementation (`src/tracker/file.rs`) — not in the original design, added so the dispatch loop could be proven end-to-end without Linear credentials; a real backend, not a mock
 - [x] Structured proposal issue body: title, one-line summary, "why now" bullets, effort estimate (S/M/L), risk note, YAML frontmatter (`task_type`, `target_paths`, `acceptance_criteria`, `research_ref`, `review`) — `render_description` (shared by both adapters) renders it, `TrackerIssue.description` carries it back out to the dispatch prompt, and `examples/e2e_smoke.rs` proved the full round trip live against a real `claude -p` dispatch
 - [x] Decision surface: for `LinearAdapter`, moves the issue's real ticket `state` field (`Pending`/`Approved`/`In Review`/`Done`, four named workflow states required per team) via `issueUpdate`, not a label; `Rejected`/`StaleClosed` archive the issue (`issueArchive`) instead of using a fifth/sixth state — see `docs/wiki/architecture/tracker-adapter.md` § Decision state: the issue's real ticket state, not a label. `FileTracker` filters directly on its own `decision_state` field.
 - [ ] Auto-stale-close after N days (default 7) — distinct from an explicit reject for dedup purposes
-- [x] Dedup query: title-similarity match via `query_similar` (Linear's `searchIssues`; file backend's is a case-insensitive substring match) — content-hash matching and open-PR-file-overlap checking not built
 - [x] Dependency-aware dispatch: `TrackerAdapter::blockers` reads an issue's real tracker-native blocking relationships (Linear's `blocks`/`blockedBy` issue-relations, read via `inverseRelations`; `FileTracker`'s own `blocked_by` field for local testing) — `dispatch_approved_issues` skips an `Approved` issue this tick if any blocker isn't `Done`, noting it once (`[lucid:blocked]` marker) rather than every tick
 
 ## CLI / observability
 
 - [x] `lucid start` — start the daemon (foreground only; detach/IPC not designed, see docs/CLI.md § Not yet designed)
 - [ ] `lucid status` / `lucid show` — blocked on the same undesigned IPC; `Daemon::runs_snapshot` exists for an in-process caller but nothing cross-process reads it yet
-- [x] `lucid presence status` / `lucid presence override` / `lucid pm wake` / `lucid config validate` / `lucid config show`
+- [x] `lucid presence status` / `lucid presence override` / `lucid config validate` / `lucid config show`
 - [x] `lucid task list` / `approve` / `reject` / `dispatch-now` — a terminal convenience over the tracker's own UI, not a second source of truth: every subcommand is a thin call through the same `TrackerAdapter` (`query_by_decision_state`/`set_decision_state`) the daemon itself uses. `dispatch-now` runs the daemon's exact dispatch path (`worker::dispatch_and_finalize`, now shared between `daemon.rs` and the CLI) on demand for one already-`Approved` issue — it changes *when* approved work runs, never *whether* (see `docs/wiki/architecture/worker-completion.md`)
-- [x] `lucid task create` — files a new `Proposal` via `TrackerAdapter::create_proposal` directly from the CLI, printing the new issue id. The real write path for `Proposal.review`/`Proposal.verify_cmd`: previously the only ways to set either were hand-editing a ticket's frontmatter text or constructing a `Proposal` struct in Rust (`examples/e2e_smoke.rs`). Skips `pm::wake`'s `query_similar` dedup check by design — a human typing a title explicitly isn't the re-filing case dedup guards against.
+- [x] `lucid task create` — files a new `Proposal` via `TrackerAdapter::create_proposal` directly from the CLI, printing the new issue id. The real write path for `Proposal.review`/`Proposal.verify_cmd`: previously the only ways to set either were hand-editing a ticket's frontmatter text or constructing a `Proposal` struct in Rust (`examples/e2e_smoke.rs`). No dedup check by design — the caller is responsible for not re-filing something that already exists.
 - [x] Full command tree, flags, and output formats: see `docs/CLI.md`
 
 ## Reconciliation loop
@@ -78,7 +73,7 @@ listed separately and are explicitly out of v1.
 - [ ] Refresh tracker state for all claimed issues each tick: terminal → cleanup, no-longer-active → stop without cleanup, still-active → update snapshot — today only checks "is this issue still in the `Approved` decision state," doesn't detect a human un-approving/closing an in-flight issue mid-run
 - [x] Parked-state rule for a *completed* run: `ReviewMode::Human`/`Agent`-on-fail move the issue to `DecisionState::NeedsReview`, out of the `Approved` decision state entirely, so the dispatch loop never re-picks it up until a human moves it (see `docs/wiki/architecture/worker-completion.md`). Distinct from parking a *stuck/looping in-flight* run — `WorkerPhase::AwaitingHumanInput` still exists but nothing produces it yet
 - [x] Every tick, every `NeedsReview` issue's PR is checked (`gh pr view --json state` via `pr::status`) and reconciled to the human's already-made decision: merged → `Done`, closed without merging → `Rejected`, still open (or no PR found yet) → left alone. Runs on every tick regardless of presence mode — it only records a decision a human already made, never dispatches anything
-- [x] Persist reconciliation/session state (`Daemon.runs`, the PM-wake backoff timer, last presence mode) to a flat JSON file, written after every tick and reloaded at startup — same flat-file convention as `presence::override_file`/`presence-audit.log` rather than a database (`src/state.rs::DaemonState`), fixing the Symphony in-memory-only weakness the design called out. A missing or corrupt state file is treated as a fresh empty state, matching `override_file`'s existing tolerance for a missing file
+- [x] Persist reconciliation/session state (`Daemon.runs`, last presence mode) to a flat JSON file, written after every tick and reloaded at startup — same flat-file convention as `presence::override_file`/`presence-audit.log` rather than a database (`src/state.rs::DaemonState`), fixing the Symphony in-memory-only weakness the design called out. A missing or corrupt state file is treated as a fresh empty state, matching `override_file`'s existing tolerance for a missing file
 
 ---
 

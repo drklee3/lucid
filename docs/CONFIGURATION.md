@@ -19,7 +19,6 @@ file_path = "state/tracker.json"
 
 [presence]
 idle_threshold_minutes = 20
-proposal_cap_per_wake = 3
 
 [observability]
 otlp_endpoint = "http://localhost:4317"
@@ -57,7 +56,6 @@ One entry per dispatch target; multiple profiles for the same harness (e.g. a su
 | Field | Type | Notes |
 |---|---|---|
 | `idle_threshold_minutes` | integer | Minutes of sustained idle before flipping to autonomous mode. |
-| `proposal_cap_per_wake` | integer | Max proposals a single PM wake cycle may file. |
 | `override_path` | string | Optional. Defaults to `$XDG_STATE_HOME/lucid/presence-override` (or `~/.local/state/...`). |
 
 ## `[observability]`
@@ -92,7 +90,6 @@ Ready-to-copy scripts, including a Discord webhook with no lucid code aware Disc
 |---|---|---|---|
 | `tick_interval_secs` | integer | `30` | How often the reconciliation loop checks presence and dispatches approved issues. |
 | `stall_timeout_secs` | integer | `600` | Hard wall-clock limit before a harness process is killed and marked `TimedOut`. |
-| `pm_wake_interval_mins` | integer | `60` | Minimum time between PM gap-detection wake cycles while autonomous. |
 | `workdir` | string | `"."` | The main repo checkout. Every dispatch's worktree branches off `base_branch`'s tip here, and this is where `gh pr create`/`gh pr merge` run from. |
 | `base_branch` | string | `"main"` | Branch each dispatch's worktree is created from, and PRs target. |
 | `worktree_root` | string | system temp dir | Where per-issue worktrees are created — kept outside `workdir` so they never show up in the main repo's own `git status`. |

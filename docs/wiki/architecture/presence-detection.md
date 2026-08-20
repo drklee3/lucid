@@ -28,11 +28,11 @@ No line is written on the very first tick (nothing to compare against yet) or wh
 
 This is the mechanism that satisfies the "log every mode transition" requirement above — presence-gated autonomy is trust-critical, and the audit log is what makes a transition inspectable after the fact instead of only visible at the instant it happens.
 
-## What presence gates
+## What presence gates today: nothing, by design
 
-Presence gates `daemon::maybe_wake_pm` only — the PM proactively investigating the codebase and filing *new* proposals with no human having looked at them yet. It does not gate `daemon::dispatch_approved_issues`: an `Approved` issue already has an explicit human decision behind it (a person approved it in Linear, or via `lucid task approve`), so running it isn't the same class of unsupervised action a PM wake is. `dispatch_approved_issues` and `reconcile_needs_review` (closing the loop on a PR a human already merged/closed on GitHub) both run on every tick regardless of presence mode — see `daemon::tick`'s doc comment. `lucid task dispatch-now` (`docs/CLI.md`) is accordingly just a latency shortcut over the tick interval, not a presence bypass — there's no gate left there to bypass.
+Presence used to gate `daemon::maybe_wake_pm` — the PM proactively investigating the codebase and filing *new* proposals with no human having looked at them yet. That component doesn't live in lucid anymore (see [overview](overview.md)): proposing work is entirely an external concern, outside lucid's process, so there's nothing left in lucid's own pipeline for presence to gate. `dispatch_approved_issues` (an `Approved` issue already has an explicit human decision behind it) and `reconcile_needs_review` (closing the loop on a PR a human already merged/closed on GitHub) both always ran on every tick regardless of presence mode — see `daemon::tick`'s doc comment.
 
-Narrower than the system's original design, which gated all `Autonomous`-only tick work (dispatch included) behind presence. The risk presence-gating exists to guard against is the PM generating and acting on new work while unsupervised; an already-approved ticket already cleared that bar via the approval step itself.
+`daemon::tick` still resolves presence once per tick and feeds it to the audit log (below) — that's an intentionally-kept observability signal, not a live gate. This module (`PresenceSource`, the override file, `lucid presence status`/`override`) stays in lucid because it's a general-purpose pluggable backend, not because anything downstream currently branches on its result. If a future in-daemon feature needs an unsupervised-action gate again, this is where it would plug back in; nothing today requires it to.
 
 ## Why `xprintidle` is out
 

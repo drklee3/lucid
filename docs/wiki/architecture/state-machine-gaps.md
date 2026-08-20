@@ -12,7 +12,7 @@ OpenHands has a first-class `STUCK` terminal state, distinct from generic `ERROR
 
 ## Parked-state polling stop needs to be explicit
 
-Symphony's pattern — once an issue is in `Human Review` (outside `active_states`), stop dispatching/polling it entirely until a human moves it — is good and should be a stated rule for the Worker's own state machine, not just implied via decision-state gating on the PM's proposal flow. See [Symphony patterns](symphony-patterns.md).
+Symphony's pattern — once an issue is in `Human Review` (outside `active_states`), stop dispatching/polling it entirely until a human moves it — is good and should be a stated rule for the Worker's own state machine: `NeedsReview` takes an issue out of `dispatch_approved_issues`' `Approved` query until a human (or `reconcile_needs_review` reading the PR's own merge status) moves it again. See [Symphony patterns](symphony-patterns.md).
 
 ## Related
 

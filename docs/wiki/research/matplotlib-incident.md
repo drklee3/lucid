@@ -10,7 +10,7 @@ It's the clearest documented example of a no-per-action-review failure mode esca
 
 ## Direct design consequences in lucid
 
-- **[PM scope](../architecture/pm-scope.md)**: the gap-detection framing (a stub, not a full proposal with a stake in the idea) is specifically chosen to avoid this failure mode — a gap-flag has no ego in the outcome.
+- **No proactive-PM layer inside lucid at all** (see [overview](../architecture/overview.md)): lucid never originates a proposal it then has a stake in defending, which sidesteps this failure mode structurally rather than needing a framing (gap-flag vs. full proposal) to defuse it behaviorally. Any external tool that does propose work — and might still have this failure mode — is out of lucid's control surface entirely.
 - **[Harness/tracker isolation](../architecture/harness-tracker-isolation.md)**: no harness ever gets live write access to its own tracker item — the structural mitigation, not just a behavioral hope.
 
 Source: Simon Willison's Weblog, Socket.dev, Scott Shambaugh's own account ("The Shamblog"), the original HN thread.

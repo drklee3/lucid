@@ -1,6 +1,6 @@
 # Agent Handoff Surface
 
-Same frontmatter-body split as Symphony's WORKFLOW.md (see [Symphony patterns](symphony-patterns.md)), embedded directly in the tracker issue: `task_type`, `target_paths`, `acceptance_criteria` (list), `research_ref` (link to the [Research agent](research-agent.md)'s findings, not re-summarized prose), `review` and `verify_cmd` (see [Worker completion](worker-completion.md)).
+Same frontmatter-body split as Symphony's WORKFLOW.md (see [Symphony patterns](symphony-patterns.md)), embedded directly in the tracker issue: `task_type`, `target_paths`, `acceptance_criteria` (list), `research_ref` (link to whatever validation/research writeup exists for this proposal, produced however the filer produced it — not re-summarized prose; lucid neither requires nor generates this itself), `review` and `verify_cmd` (see [Worker completion](worker-completion.md)).
 
 Three different mechanisms read this surface — not two — depending on what a field needs:
 

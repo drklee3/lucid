@@ -12,7 +12,7 @@ One running `lucid start` process manages several repos at once, rather than one
 
 **Stays global** (one instance, shared across every project): presence detection, observability/OTel config, tick interval, stall timeout. There's exactly one human whose "away" state matters — it doesn't vary by which repo is being worked on, so presence gating stays a single top-level concern, not something threaded per-project.
 
-**Becomes per-project**: tracker binding (team/project/backend), `workdir`, `base_branch`, `worktree_root`, `verify_cmd`, the PM-wake backoff timer, and dispatch retry-tracking (`runs`).
+**Becomes per-project**: tracker binding (team/project/backend), `workdir`, `base_branch`, `worktree_root`, `verify_cmd`, and dispatch retry-tracking (`runs`).
 
 Config shape: the central `lucid.toml` gains a `[[projects]]` array (same pattern `[[harness_profiles]]` already uses) — each entry a **pointer**, not a full config: `path = "/home/drk/github/repo-a"`. Each pointed-to repo carries its own lightweight checked-in config file for the repo-specific bits (tracker project key, `verify_cmd`, `base_branch`) — Symphony's `WORKFLOW.md` shape, adapted. The daemon's own config says *which repos to watch*; each repo's own file says *how it wants to be worked on*. A project's settings travel with its code instead of living only in one operator's local, gitignored file.
 
@@ -30,13 +30,13 @@ Validation is opt-in, not eager: `Config::validate_projects()` resolves and pars
 
 `Daemon::tick()` walks every configured project sequentially, one at a time — no second concurrency model layered on top of the daemon's own mixed sequential/concurrent dispatch design (`Sandboxed` issues dispatch concurrently with each other, `Local` issues stay sequential, within one project's tick — see [sandboxed-execution](sandboxed-execution.md)).
 
-`DaemonState.runs` and `last_pm_wake` are keyed by project id (`HashMap<ProjectId, ...>`) rather than flat, so two projects' PM-wake backoff timers and retry-tracking don't collide on the same map.
+`DaemonState.runs` is keyed by project id (`HashMap<ProjectId, ...>`) rather than flat, so two projects' retry-tracking doesn't collide on the same map.
 
 ### Implemented (build order item 3, commit `f72c75b`)
 
-`Daemon` (`src/daemon.rs`) no longer holds tracker/workdir/base_branch/verify_cmd/runs/last_pm_wake directly; those moved onto a new private `ProjectRuntime` struct, one instance per configured project, held as `projects: Vec<ProjectRuntime>` on `Daemon`. `Daemon` itself keeps only what's genuinely shared: harness profiles, observability config, presence sources/config, tick/stall/PM-wake timing, and the override file/audit log. `Daemon::new` now returns `anyhow::Result<Self>` instead of `Self`, since building a project's tracker (or loading its `lucid.project.toml`) can fail — with `[[projects]]` empty, it builds exactly one `ProjectRuntime` wrapping `config.daemon.*` directly (today's single-repo shape, unchanged); otherwise one `ProjectRuntime` per pointer, each loading its own `ProjectConfig` and its own tracker via `effective_tracker_config()` (below).
+`Daemon` (`src/daemon.rs`) no longer holds tracker/workdir/base_branch/verify_cmd/runs directly; those moved onto a new private `ProjectRuntime` struct, one instance per configured project, held as `projects: Vec<ProjectRuntime>` on `Daemon`. `Daemon` itself keeps only what's genuinely shared: harness profiles, observability config, presence sources/config, tick/stall timing, and the override file/audit log. `Daemon::new` now returns `anyhow::Result<Self>` instead of `Self`, since building a project's tracker (or loading its `lucid.project.toml`) can fail — with `[[projects]]` empty, it builds exactly one `ProjectRuntime` wrapping `config.daemon.*` directly (today's single-repo shape, unchanged); otherwise one `ProjectRuntime` per pointer, each loading its own `ProjectConfig` and its own tracker via `effective_tracker_config()` (below).
 
-`tick()` sequences as: for each project in order, `tick_project()` runs `reconcile_needs_review()` then `dispatch_approved_issues()` (dispatch only runs if reconcile succeeded, matching prior single-project sequencing) — then, once every project's reconcile/dispatch has been attempted, presence resolves exactly once, globally, exactly as before; if that resolves `Autonomous`, `maybe_wake_pm()` runs once per project in the same per-project loop shape. A given project's `tick_project()` error is caught, logged (`project `{id}`: tick failed: {e}`), and does not stop the remaining projects' reconcile/dispatch/PM-wake from running — but `tick()` still remembers the first such error and returns it once every project (and presence resolution) has been handled, so `run_foreground`'s caller-level log still fires. A PM-wake failure was already logged-and-swallowed rather than propagated before this change and stays that way per-project.
+`tick()` sequences as: for each project in order, `tick_project()` runs `reconcile_needs_review()` then `dispatch_approved_issues()` (dispatch only runs if reconcile succeeded, matching prior single-project sequencing) — then, once every project's reconcile/dispatch has been attempted, presence resolves exactly once, globally, purely to feed the audit log (see [presence detection](presence-detection.md)). A given project's `tick_project()` error is caught, logged (`project `{id}`: tick failed: {e}`), and does not stop the remaining projects' reconcile/dispatch from running — but `tick()` still remembers the first such error and returns it once every project (and presence resolution) has been handled, so `run_foreground`'s caller-level log still fires.
 
 ### `project_key`: `ProjectConfig` wins over `TrackerConfig` when set
 
@@ -63,7 +63,7 @@ Only `dispatch-now` changes runtime behavior on a resolved project: it applies t
 ## Build order
 
 1. `[[projects]]` pointer array in `lucid.toml` + per-repo checked-in config file shape (the `WORKFLOW.md`-equivalent). **Done** — see Implemented section above.
-2. `DaemonState` re-keyed by project id. **Done** — `runs`/`last_pm_wake` are `HashMap<ProjectId, _>` on `DaemonState` (`src/state.rs`, commit `bab7e22`).
+2. `DaemonState` re-keyed by project id. **Done** — `runs` is `HashMap<ProjectId, _>` on `DaemonState` (`src/state.rs`, commit `bab7e22`).
 3. `Daemon::tick()` loops projects sequentially. **Done** — see Implemented section above.
 4. `--project <name>` CLI flag + directory-detection default across the `task` subcommands. **Done** — see Implemented section above.
 5. `FileTracker` id-collision check once multiple projects can share a daemon process.

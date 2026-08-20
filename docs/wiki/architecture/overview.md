@@ -1,20 +1,19 @@
 # System Overview
 
-lucid is a multi-agent orchestration system whose agents don't just execute tasks but **proactively investigate**, **propose work**, and **continue development** while the user is away. It's composed of open-source building blocks — agnostic to tracker, coding harness, and model.
+lucid is the layer above a coding harness: it dispatches already-approved tickets to a sandboxed coding harness, reconciles the result (retries, PR open/merge, tracker state), and stops there. It does not decide what work should exist — that's out of scope by design, not a missing feature. It's composed of open-source building blocks — agnostic to tracker, coding harness, and model.
 
 ## Core roles
 
-1. **Worker Agent** — monitors the tracker for approved tasks, executes via a coding harness, opens PRs. Runs continuously, **presence-independent**: a human already approved that specific ticket, so dispatching it isn't unsupervised action the same way proactive investigation is. This half exists in many forms already (see [prior-art landscape](../research/prior-art-landscape.md)); the novelty here is the layer above it, not the Worker itself.
-2. **PM Agent** — investigates the repo, identifies gaps against a stated goal, proposes tasks. Hands off to the Research agent for validation. Files proposals as tracker issues. Optional, **presence-gated**: only runs once the operator has gone idle. This is the differentiated piece — see [PM scope](pm-scope.md) and [prior-art landscape](../research/prior-art-landscape.md) for why nothing existing covers it.
-3. **Research Agent** — validates a proposed task (feasibility, prior art, dependency compatibility) before the PM files it. See [research agent](research-agent.md).
-4. **Human** — reviews proposals as binary decisions, reviews PRs. The system respects presence for the *proactive* layer (role 2): when the user is at the keyboard, the PM doesn't go looking for new work; when idle, it does. Presence does not gate role 1 — see [presence detection](presence-detection.md).
+1. **Worker** — monitors the tracker for approved tasks, executes via a coding harness, opens PRs. Runs continuously, **presence-independent**: a human already approved that specific ticket, so dispatching it isn't unsupervised action. This half exists in many forms already (see [prior-art landscape](../research/prior-art-landscape.md)) — lucid's job is doing it well (sandboxed by default, tracker-agnostic, harness-agnostic, script-extensible), not inventing a new category.
+2. **Human** — files or approves tickets, reviews PRs. The only origin point for new work lucid ever acts on: `lucid task create`, direct tracker approval, or any external tool that files a ticket through the same `TrackerAdapter` — lucid treats all three identically. See [tracker adapter](tracker-adapter.md).
+
+Proactive gap-detection ("what should get built next," investigating a repo unprompted and proposing new work) is a real, useful capability — see [prior-art landscape](../research/prior-art-landscape.md) and [pm-layer-novelty](../research/pm-layer-novelty.md) for why nothing else in the ecosystem does it well either. lucid deliberately does not build it: anything that wants to propose work files a ticket through the tracker like a human would, using the same `review:`/`verify_cmd` frontmatter contract (see [agent handoff](agent-handoff.md)) — external cron jobs and agents are a first-class way to drive lucid, not a workaround. This keeps lucid's own control surface to one deterministic loop (poll, dispatch, retry, reconcile) instead of an LLM-reasoning "should this exist" judgment call, and keeps the [matplotlib incident](../research/matplotlib-incident.md) failure mode (an agent with a stake in defending its own idea) entirely outside lucid's process boundary.
 
 ## Key constraints
 
 - **Tracker-agnostic** — not locked to Linear. See [tracker adapter](tracker-adapter.md).
 - **Harness-agnostic** — not locked to any one coding CLI. See [harness dispatch](harness-dispatch.md).
-- **Model-agnostic** — each role can use a different model.
-- **Presence-aware trigger** — not a naive cron, and not blanket either: gates proactive investigation, not approved-work dispatch. See [presence detection](presence-detection.md).
+- **Model-agnostic** — nothing in lucid itself calls an LLM; only the dispatched harness does.
 - **Sandboxed by default** — dispatch runs in an isolated container unless explicitly opted out. See [sandboxed execution](sandboxed-execution.md).
 - **Extensible without forking** — every pluggable primitive below can optionally be implemented as a script instead of embedded Rust. See [extensibility primitives](extensibility-primitives.md).
 
@@ -33,7 +32,6 @@ flowchart TB
     subgraph pipeline["Pipeline stages — the daemon's own control flow"]
         direction LR
         worktree["Worker: worktree + dispatch + PR"] --> reconcile["Reconciliation: poll, stall-detect, retry"]
-        pm["PM: gap-detection on wake"] --> research["Research: feasibility validation"]
     end
 
     subgraph backends["Pluggable backends — trait + config-selected implementation"]
@@ -58,7 +56,7 @@ flowchart TB
 
 Concretely:
 
-- **Pipeline stages** (not swappable, this *is* lucid's shape): Worker executor (per-issue worktree isolation, harness dispatch, PR open/merge — see [harness dispatch](harness-dispatch.md), [worker completion](worker-completion.md)), Reconciliation loop (presence-independent poll tick — see [symphony patterns](symphony-patterns.md)), PM gap-detection job (presence-gated — see [pm scope](pm-scope.md)), Research agent (validates before filing — see [research agent](research-agent.md)).
+- **Pipeline stages** (not swappable, this *is* lucid's shape): Worker executor (per-issue worktree isolation, harness dispatch, PR open/merge — see [harness dispatch](harness-dispatch.md), [worker completion](worker-completion.md)), Reconciliation loop (presence-independent poll tick — see [symphony patterns](symphony-patterns.md)).
 - **Pluggable backends** (trait + `build()`-style config dispatcher, same shape reused four times): `TrackerAdapter` (Linear/file — [tracker adapter](tracker-adapter.md)), `PresenceSource` (logind/override — [presence detection](presence-detection.md)), `HarnessProfile`/`ExecutionBackend` (Sandboxed/Local, any harness binary — [harness dispatch](harness-dispatch.md), [sandboxed execution](sandboxed-execution.md)), `NotificationSink` (Null/Script — [human-in-the-loop](human-in-the-loop.md)).
 - **Extensibility mechanism** (layered on the pluggable-backend pattern, not a separate system — [extensibility primitives](extensibility-primitives.md)): `ScriptSink` is shipped; script-backed `TrackerAdapter`/`PresenceSource` and a `DispatchPolicy` pre-dispatch gate are designed but not built.
 - **Cross-cutting, not in any one category**: multi-project support ([multi-project](multi-project.md) — one daemon, many `ProjectRuntime`s), persistence ([persistence](persistence.md) — flat files over a database), observability ([observability](observability.md), [trace-correlation](trace-correlation.md)).
@@ -72,8 +70,8 @@ Almost everything here is net-new code, deliberately — each piece is small and
 - [Tracker adapter](tracker-adapter.md)
 - [Harness dispatch](harness-dispatch.md)
 - [Sandboxed execution](sandboxed-execution.md)
-- [PM scope](pm-scope.md)
 - [Extensibility primitives](extensibility-primitives.md) — the script-backed-implementation mechanism, and which pieces have it today
 - [Multi-project](multi-project.md)
 - [Symphony patterns](symphony-patterns.md) — what was borrowed directly from prior art
-- [Prior-art landscape](../research/prior-art-landscape.md) — why the PM layer specifically is the novel piece
+- [Prior-art landscape](../research/prior-art-landscape.md) — the systems survey, and why a proactive-PM layer specifically stays out of lucid's own scope
+- [PM-layer novelty](../research/pm-layer-novelty.md) — why nothing in the ecosystem covers proactive gap-detection well, and why that's still not a reason for lucid to build it
