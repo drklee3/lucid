@@ -58,8 +58,7 @@ pub fn dispatch_prompt(issue: &TrackerIssue, comments: &[String]) -> String {
 }
 
 /// A Worker always dispatches under `auto` permission mode — full tool access
-/// with classifier review, not the read-only surface a PM investigation gets (see
-/// `pm::wake`'s `--allowedTools` list). See docs/wiki/architecture/harness-dispatch.md.
+/// with classifier review. See docs/wiki/architecture/harness-dispatch.md.
 const WORKER_CLAUDE_ARGS: &[&str] = &["--permission-mode", "auto"];
 
 /// Trace-query link for one dispatch, filtered to just that run's spans.
@@ -444,7 +443,7 @@ fn pr_body(issue: &TrackerIssue) -> String {
 
 /// A second, read-only dispatch that reviews a `ReviewMode::Agent` issue's pending
 /// diff against its `acceptance_criteria` — reuses the same profile list and
-/// dispatch mechanism as the Worker's own run, just with `pm::wake`'s restricted,
+/// dispatch mechanism as the Worker's own run, just with a restricted,
 /// non-mutating `--allowedTools` surface (a reviewer has no business changing
 /// files) instead of full `auto` access.
 const REVIEWER_CLAUDE_ARGS: &[&str] = &[
@@ -778,9 +777,6 @@ mod tests {
             &self,
             _state: DecisionState,
         ) -> anyhow::Result<Vec<TrackerIssue>> {
-            unimplemented!("not exercised by these tests")
-        }
-        async fn query_similar(&self, _title: &str) -> anyhow::Result<Vec<TrackerIssue>> {
             unimplemented!("not exercised by these tests")
         }
         async fn attach_note(&self, issue_id: &str, body: &str) -> anyhow::Result<()> {

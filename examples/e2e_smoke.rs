@@ -68,7 +68,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Files a full proposal (title + frontmatter/body handoff surface) and
     // approves it — exercises the same create_proposal -> set_decision_state ->
-    // query_by_label("proposal:approved") path `daemon::dispatch_approved_issues`
+    // query_by_decision_state(Approved) path `daemon::dispatch_approved_issues`
     // uses, instead of hand-building a bare TrackerIssue.
     let proposal = Proposal {
         title: "Add a NOTES.md file".to_string(),
@@ -127,12 +127,7 @@ async fn main() -> anyhow::Result<()> {
     println!("session_id:  {:?}", run.session_id);
     println!("last_error:  {:?}", run.last_error);
 
-    let final_state = tracker
-        .query_similar(&issue.title)
-        .await?
-        .into_iter()
-        .find(|i| i.id == issue.id)
-        .and_then(|i| i.decision_state);
+    let final_state = final_decision_state(&tracker, &issue.id).await?;
     println!("\nfinal decision_state: {final_state:?}");
 
     println!(
@@ -141,4 +136,28 @@ async fn main() -> anyhow::Result<()> {
     );
 
     Ok(())
+}
+
+/// `ReviewMode::Auto` moves a successful dispatch straight to `Done`; check the
+/// other plausible outcomes too so this still reports something useful on a
+/// failed/needs-review run.
+async fn final_decision_state(
+    tracker: &FileTracker,
+    issue_id: &str,
+) -> anyhow::Result<Option<DecisionState>> {
+    for state in [
+        DecisionState::Done,
+        DecisionState::NeedsReview,
+        DecisionState::Approved,
+    ] {
+        if let Some(found) = tracker
+            .query_by_decision_state(state)
+            .await?
+            .into_iter()
+            .find(|i| i.id == issue_id)
+        {
+            return Ok(found.decision_state);
+        }
+    }
+    Ok(None)
 }

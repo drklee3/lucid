@@ -4,11 +4,11 @@
 #![allow(clippy::unused_async)]
 
 use clap::Parser;
-use lucid::cli::{self, Cli, Command, ConfigCommand, PmCommand, PresenceCommand, TaskCommand};
+use lucid::cli::{self, Cli, Command, ConfigCommand, PresenceCommand, TaskCommand};
 use lucid::config::{Config, ProjectConfig, ProjectPointer, default_override_path};
 use lucid::daemon::Daemon;
 use lucid::presence::override_file::{OverrideFile, OverrideMode};
-use lucid::presence::{self, PresenceMode, PresenceSourceList};
+use lucid::presence::{self, PresenceSourceList};
 use lucid::tracker::{DecisionState, EffortEstimate, Proposal, ReviewMode};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -30,13 +30,6 @@ async fn main() -> anyhow::Result<()> {
             format,
             log_lines,
         } => show(&worker_id, format, log_lines).await,
-        Command::Pm { command } => match command {
-            PmCommand::Wake {
-                respect_presence,
-                dry_run,
-                config,
-            } => pm_wake(respect_presence, dry_run, config).await,
-        },
         Command::Presence { command } => match command {
             PresenceCommand::Status { format, config } => presence_status(format, config).await,
             PresenceCommand::Override { mode, config } => presence_override(mode, config).await,
@@ -268,55 +261,6 @@ async fn show(_worker_id: &str, _format: cli::OutputFormat, _log_lines: u32) -> 
     )
 }
 
-async fn pm_wake(
-    respect_presence: bool,
-    dry_run: bool,
-    config: Option<PathBuf>,
-) -> anyhow::Result<()> {
-    let config = Config::load(&resolve_config_path(config))?;
-
-    if respect_presence {
-        let sources = default_presence_sources();
-        let override_file = override_file_for(&config);
-        let idle_threshold =
-            Duration::from_secs(u64::from(config.presence.idle_threshold_minutes) * 60);
-        let mode = presence::resolve(&sources, &override_file, idle_threshold).await?;
-        if mode != PresenceMode::Autonomous {
-            println!(
-                "presence mode is Active — skipping (pass without --respect-presence to bypass the gate)"
-            );
-            return Ok(());
-        }
-    }
-
-    let tracker = lucid::tracker::build(&config.tracker)?;
-    let outcome = lucid::pm::wake(
-        tracker.as_ref(),
-        &config.harness_profiles,
-        &config.observability,
-        &config.daemon.workdir,
-        "keep the codebase healthy and close concrete, low-risk gaps",
-        config.presence.proposal_cap_per_wake,
-        Duration::from_secs(config.daemon.stall_timeout_secs),
-        dry_run,
-    )
-    .await?;
-
-    println!(
-        "PM wake: {} proposed, {} filed, {} skipped as similar to existing issues",
-        outcome.proposed.len(),
-        outcome.filed.len(),
-        outcome.skipped_similar.len()
-    );
-    for p in &outcome.proposed {
-        println!("  - {}", p.title);
-    }
-    if dry_run {
-        println!("(dry run — nothing was actually filed)");
-    }
-    Ok(())
-}
-
 async fn presence_status(format: cli::OutputFormat, config: Option<PathBuf>) -> anyhow::Result<()> {
     let config = Config::load(&resolve_config_path(config))?;
     let sources = default_presence_sources();
@@ -417,10 +361,9 @@ fn task_state_to_decision(state: cli::TaskState) -> DecisionState {
     }
 }
 
-/// Files a new proposal directly through the tracker adapter — the same write
-/// path `pm::wake` uses, minus its `query_similar` dedup check: a human typing a
-/// title explicitly isn't the runaway re-filing case dedup guards against, so
-/// this always creates.
+/// Files a new proposal directly through the tracker adapter — no dedup check
+/// against similar open issues; the caller (human or external filing agent) is
+/// responsible for not re-filing something that already exists.
 #[allow(clippy::too_many_arguments)]
 async fn task_create(
     title: String,
@@ -634,7 +577,6 @@ mod project_resolution_tests {
 
             [presence]
             idle_threshold_minutes = 20
-            proposal_cap_per_wake = 3
 
             [observability]
             otlp_endpoint = "http://localhost:4317"
@@ -764,7 +706,6 @@ mod dispatch_now_tests {
 
             [presence]
             idle_threshold_minutes = 20
-            proposal_cap_per_wake = 3
 
             [observability]
             otlp_endpoint = "http://localhost:4317"

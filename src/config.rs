@@ -153,8 +153,6 @@ pub struct ObservabilityConfig {
 pub struct PresenceConfig {
     /// Minutes of sustained idle before flipping to autonomous mode.
     pub idle_threshold_minutes: u32,
-    /// Max proposals a PM wake cycle may file.
-    pub proposal_cap_per_wake: u32,
     /// State file the explicit override layer reads/writes (see
     /// docs/wiki/architecture/presence-detection.md). Defaults to
     /// `$XDG_STATE_HOME/lucid/presence-override` (or `~/.local/state/...`) when
@@ -176,9 +174,6 @@ pub struct DaemonConfig {
     /// the run marked `TimedOut` (see `harness::DispatchRequest::timeout`).
     #[serde(default = "default_stall_timeout_secs")]
     pub stall_timeout_secs: u64,
-    /// Minimum time between PM gap-detection wake cycles while autonomous.
-    #[serde(default = "default_pm_wake_interval_mins")]
-    pub pm_wake_interval_mins: u64,
     /// The main repo checkout — every dispatch's worktree branches off
     /// `base_branch`'s tip here, and this is also where `gh pr create`/`gh pr
     /// merge` run from. Defaults to the current directory.
@@ -210,7 +205,6 @@ impl Default for DaemonConfig {
         Self {
             tick_interval_secs: default_tick_interval_secs(),
             stall_timeout_secs: default_stall_timeout_secs(),
-            pm_wake_interval_mins: default_pm_wake_interval_mins(),
             workdir: default_workdir(),
             base_branch: default_base_branch(),
             worktree_root: default_worktree_root(),
@@ -225,10 +219,6 @@ fn default_tick_interval_secs() -> u64 {
 
 fn default_stall_timeout_secs() -> u64 {
     600
-}
-
-fn default_pm_wake_interval_mins() -> u64 {
-    60
 }
 
 fn default_workdir() -> PathBuf {
@@ -383,7 +373,6 @@ mod tests {
 
             [presence]
             idle_threshold_minutes = 20
-            proposal_cap_per_wake = 3
 
             [observability]
             otlp_endpoint = "http://localhost:4317"
@@ -429,7 +418,6 @@ mod tests {
 
             [presence]
             idle_threshold_minutes = 20
-            proposal_cap_per_wake = 3
 
             [observability]
             otlp_endpoint = "http://localhost:4317"
@@ -478,7 +466,6 @@ mod tests {
 
             [presence]
             idle_threshold_minutes = 20
-            proposal_cap_per_wake = 3
 
             [observability]
             otlp_endpoint = "http://localhost:4317"
@@ -526,7 +513,6 @@ mod tests {
 
             [presence]
             idle_threshold_minutes = 20
-            proposal_cap_per_wake = 3
 
             [observability]
             otlp_endpoint = "http://localhost:4317"
@@ -575,7 +561,6 @@ mod tests {
 
             [presence]
             idle_threshold_minutes = 20
-            proposal_cap_per_wake = 3
 
             [observability]
             otlp_endpoint = "http://localhost:4317"
@@ -626,7 +611,6 @@ mod tests {
 
             [presence]
             idle_threshold_minutes = 20
-            proposal_cap_per_wake = 3
 
             [observability]
             otlp_endpoint = "http://localhost:4317"
@@ -669,7 +653,6 @@ mod tests {
 
             [presence]
             idle_threshold_minutes = 20
-            proposal_cap_per_wake = 3
 
             [observability]
             otlp_endpoint = "http://localhost:4317"
@@ -749,7 +732,6 @@ mod tests {
 
             [presence]
             idle_threshold_minutes = 20
-            proposal_cap_per_wake = 3
 
             [observability]
             otlp_endpoint = "http://localhost:4317"

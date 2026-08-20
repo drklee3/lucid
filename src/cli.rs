@@ -39,11 +39,6 @@ pub enum Command {
         #[arg(long, default_value_t = 50)]
         log_lines: u32,
     },
-    /// PM gap-detection commands
-    Pm {
-        #[command(subcommand)]
-        command: PmCommand,
-    },
     /// Presence-source commands
     Presence {
         #[command(subcommand)]
@@ -89,7 +84,7 @@ pub enum TaskCommand {
         #[arg(long)]
         project: Option<String>,
     },
-    /// File a new proposal directly, bypassing the PM gap-detection wake cycle
+    /// File a new proposal directly through the tracker
     Create {
         /// Issue title
         title: String,
@@ -171,19 +166,6 @@ pub enum TaskState {
     Rejected,
     Done,
     NeedsReview,
-}
-
-#[derive(Subcommand, Debug)]
-pub enum PmCommand {
-    /// Manually trigger a PM gap-detection wake cycle
-    Wake {
-        #[arg(long)]
-        respect_presence: bool,
-        #[arg(long)]
-        dry_run: bool,
-        #[arg(long)]
-        config: Option<PathBuf>,
-    },
 }
 
 #[derive(Subcommand, Debug)]

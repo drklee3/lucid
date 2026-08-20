@@ -400,38 +400,6 @@ impl TrackerAdapter for LinearAdapter {
         Ok(collected)
     }
 
-    async fn query_similar(&self, title: &str) -> anyhow::Result<Vec<TrackerIssue>> {
-        const QUERY: &str = r"
-            query Similar($term: String!, $filter: IssueFilter!, $first: Int!) {
-              searchIssues(
-                term: $term
-                filter: $filter
-                includeArchived: true
-                first: $first
-              ) {
-                nodes { id identifier title description state { name } archivedAt labels(first: 100) { nodes { id name } } }
-              }
-            }
-        ";
-
-        // Linear's own full-text+vector search, rather than a client-side title
-        // heuristic: a reworded duplicate is exactly what the dedup check must catch.
-        // Rate-limited to 30/min server-side; failures surface rather than retry.
-        let data: SearchData = self
-            .graphql(
-                QUERY,
-                json!({ "term": title, "filter": self.team_and_project_filter(), "first": 25 }),
-            )
-            .await?;
-
-        Ok(data
-            .search_issues
-            .nodes
-            .into_iter()
-            .map(IssueNode::into_tracker_issue)
-            .collect())
-    }
-
     async fn attach_note(&self, issue_id: &str, body: &str) -> anyhow::Result<()> {
         const MUTATION: &str = r"
             mutation AttachNote($input: CommentCreateInput!) {
@@ -712,12 +680,6 @@ struct WorkflowStatesData {
 #[derive(Deserialize)]
 struct IssuesData {
     issues: IssueConnection,
-}
-
-#[derive(Deserialize)]
-struct SearchData {
-    #[serde(rename = "searchIssues")]
-    search_issues: Nodes<IssueNode>,
 }
 
 #[derive(Deserialize)]

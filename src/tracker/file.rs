@@ -138,16 +138,6 @@ impl TrackerAdapter for FileTracker {
             .collect())
     }
 
-    async fn query_similar(&self, title: &str) -> anyhow::Result<Vec<TrackerIssue>> {
-        let needle = title.to_lowercase();
-        let issues = self.issues.lock().unwrap();
-        Ok(issues
-            .iter()
-            .filter(|i| i.title.to_lowercase().contains(&needle))
-            .map(Self::as_tracker_issue)
-            .collect())
-    }
-
     /// Auto-creates a bare placeholder issue if `issue_id` isn't already tracked —
     /// this lets the dispatch loop be exercised against an arbitrary id without
     /// requiring `create_proposal` to have run first (useful for a standalone e2e
@@ -236,7 +226,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_then_query_by_decision_state_and_similar() {
+    async fn create_then_query_by_decision_state() {
         let path = scratch_path("create-query");
         let tracker = FileTracker::open(&path).unwrap();
 
@@ -251,12 +241,6 @@ mod tests {
             .unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].id, id);
-
-        let similar = tracker.query_similar("flaky presence").await.unwrap();
-        assert_eq!(similar.len(), 1);
-
-        let none = tracker.query_similar("something unrelated").await.unwrap();
-        assert!(none.is_empty());
 
         let _ = std::fs::remove_file(&path);
     }

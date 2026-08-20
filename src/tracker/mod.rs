@@ -151,7 +151,7 @@ pub struct TrackerIssue {
 
 #[async_trait::async_trait]
 pub trait TrackerAdapter: Send + Sync {
-    /// File a new proposal (a PM gap-flag stub). Returns the created issue's id.
+    /// File a new proposal. Returns the created issue's id.
     async fn create_proposal(&self, proposal: &Proposal) -> anyhow::Result<String>;
 
     /// Move an existing issue's decision state (approve/reject/stale-close).
@@ -163,12 +163,6 @@ pub trait TrackerAdapter: Send + Sync {
         &self,
         state: DecisionState,
     ) -> anyhow::Result<Vec<TrackerIssue>>;
-
-    /// Content-similarity search, for the death-loop-prevention dedup check (see
-    /// docs/wiki/architecture/dedup-death-loop.md) — implementation decides what
-    /// "similar" means (title match, content hash, etc.), the caller just needs
-    /// "is there already something like this."
-    async fn query_similar(&self, title: &str) -> anyhow::Result<Vec<TrackerIssue>>;
 
     /// Posts a proof-of-work artifact (a comment/note) onto an existing issue —
     /// e.g. the trace-query link a dispatch produces (see
@@ -198,8 +192,8 @@ pub trait TrackerAdapter: Send + Sync {
 }
 
 /// Builds the configured `TrackerAdapter` — the one place `backend` strings get
-/// interpreted, so callers (the daemon, `pm::wake`, CLI handlers) never match on
-/// the backend name themselves.
+/// interpreted, so callers (the daemon, CLI handlers) never match on the
+/// backend name themselves.
 ///
 /// # Errors
 /// Returns an error for an unrecognized `backend`, a `linear` backend missing

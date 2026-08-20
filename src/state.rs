@@ -104,9 +104,8 @@ pub type ProjectId = String;
 /// `presence::override_file` and `presence::audit_log` rather than a database
 /// (see docs/wiki/architecture/persistence.md).
 ///
-/// `runs` and `last_pm_wake` are keyed by `ProjectId` rather than flat, so two
-/// projects' dispatch retry-tracking and PM-wake backoff timers don't collide
-/// once one daemon manages several repos (see
+/// `runs` is keyed by `ProjectId` rather than flat, so two projects' dispatch
+/// retry-tracking doesn't collide once one daemon manages several repos (see
 /// docs/wiki/architecture/multi-project.md).
 ///
 /// This is also what keeps `FileTracker`'s `LOCAL-{n}` ids (a counter local to
@@ -119,7 +118,6 @@ pub type ProjectId = String;
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DaemonState {
     pub runs: HashMap<ProjectId, HashMap<String, WorkerRun>>,
-    pub last_pm_wake: HashMap<ProjectId, DateTime<Utc>>,
     pub last_mode: Option<PresenceMode>,
 }
 
@@ -187,7 +185,6 @@ mod tests {
     fn missing_file_loads_as_empty_state() {
         let state = DaemonState::load(&scratch_path());
         assert!(state.runs.is_empty());
-        assert!(state.last_pm_wake.is_empty());
         assert!(state.last_mode.is_none());
     }
 
@@ -207,11 +204,8 @@ mod tests {
         project_runs.insert("ENG-9".to_string(), sample_run());
         let mut runs = HashMap::new();
         runs.insert("project-a".to_string(), project_runs);
-        let mut last_pm_wake = HashMap::new();
-        last_pm_wake.insert("project-a".to_string(), Utc::now());
         let state = DaemonState {
             runs,
-            last_pm_wake,
             last_mode: Some(PresenceMode::Autonomous),
         };
         state.save(&path).unwrap();
@@ -223,7 +217,6 @@ mod tests {
         assert_eq!(project_runs["ENG-9"].issue_id, "ENG-9");
         assert_eq!(project_runs["ENG-9"].phase, WorkerPhase::StreamingTurn);
         assert_eq!(loaded.last_mode, Some(PresenceMode::Autonomous));
-        assert!(loaded.last_pm_wake.contains_key("project-a"));
 
         let _ = std::fs::remove_file(&path);
     }
@@ -244,13 +237,8 @@ mod tests {
         runs.insert("project-a".to_string(), runs_alpha);
         runs.insert("project-b".to_string(), runs_beta);
 
-        let mut last_pm_wake = HashMap::new();
-        let wake_a = Utc::now();
-        last_pm_wake.insert("project-a".to_string(), wake_a);
-
         let state = DaemonState {
             runs,
-            last_pm_wake,
             last_mode: None,
         };
         state.save(&path).unwrap();
@@ -264,9 +252,6 @@ mod tests {
         assert_eq!(loaded.runs["project-b"]["ENG-1"].phase, WorkerPhase::Failed);
         assert!(!loaded.runs["project-a"].contains_key("ENG-1"));
         assert!(!loaded.runs["project-b"].contains_key("ENG-9"));
-
-        assert_eq!(loaded.last_pm_wake.get("project-a"), Some(&wake_a));
-        assert!(!loaded.last_pm_wake.contains_key("project-b"));
 
         let _ = std::fs::remove_file(&path);
     }

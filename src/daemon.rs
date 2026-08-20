@@ -1,7 +1,7 @@
 //! The reconciliation loop — dispatch of tracker-approved issues (presence-
-//! independent: an `Approved` issue already cleared its human gate), plus
-//! periodic, presence-gated PM wake cycles. See docs/FEATURES.md § Reconciliation
-//! loop and
+//! independent: an `Approved` issue already cleared its human gate) and
+//! reconciliation of issues awaiting review against their PR's merge status.
+//! See docs/FEATURES.md § Reconciliation loop and
 //! docs/wiki/architecture/observability.md (v1 is CLI-only: this loop prints its
 //! own activity to stdout rather than serving a dashboard or an IPC status query).
 //!
@@ -27,18 +27,23 @@
 //!
 //! Presence is resolved once per tick, globally — there's exactly one human
 //! whose "away" state matters, so it doesn't vary by project. Everything else
-//! (tracker binding, dispatch retry-tracking, PM-wake backoff) is per-project,
-//! held on [`ProjectRuntime`].
+//! (tracker binding, dispatch retry-tracking) is per-project, held on
+//! [`ProjectRuntime`].
 //!
-//! State (`runs`, PM-wake backoff timer, last presence mode) is persisted to a
-//! flat JSON file after every tick, so a restart resumes rather than forgetting
-//! in-flight tracking — same convention as `presence::override_file` and
-//! `presence::audit_log` (see [`crate::state::DaemonState`]).
+//! Presence resolution feeds the audit log only today — it no longer gates any
+//! pipeline stage lucid itself runs (`reconcile_needs_review`/
+//! `dispatch_approved_issues` are both presence-independent: an `Approved`
+//! issue already cleared its human gate by the time it reaches this loop). See
+//! docs/wiki/architecture/presence-detection.md.
+//!
+//! State (`runs`, last presence mode) is persisted to a flat JSON file after
+//! every tick, so a restart resumes rather than forgetting in-flight tracking —
+//! same convention as `presence::override_file` and `presence::audit_log` (see
+//! [`crate::state::DaemonState`]).
 
 use crate::config::{Config, ObservabilityConfig, PresenceConfig, TrackerConfig};
 use crate::harness::{ExecutionBackend, HarnessProfile};
 use crate::notify::NotificationSink;
-use crate::pm;
 use crate::pr;
 use crate::presence::audit_log::AuditLog;
 use crate::presence::override_file::OverrideFile;
@@ -47,13 +52,10 @@ use crate::state::{DaemonState, ProjectId, WorkerRun};
 use crate::tracker::{DecisionState, TrackerAdapter, TrackerIssue};
 use crate::worker;
 use crate::worktree;
-use chrono::Utc;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
-
-const PM_GOAL: &str = "keep the codebase healthy and close concrete, low-risk gaps";
 
 /// Prefix on a blocked-issue note, checked against `list_comments` before
 /// attaching another one — grepped for regardless of author, so it works the
@@ -73,7 +75,6 @@ pub struct Daemon {
     worktree_root: PathBuf,
     tick_interval: Duration,
     stall_timeout: Duration,
-    pm_wake_interval: Duration,
     last_mode: Mutex<Option<PresenceMode>>,
     state_path: PathBuf,
     /// Every repo this daemon instance watches — one entry when `[[projects]]`
@@ -86,17 +87,16 @@ pub struct Daemon {
 /// Per-project tracker binding, dispatch settings, and mutable run-tracking —
 /// everything docs/wiki/architecture/multi-project.md calls out as becoming
 /// per-project rather than staying global on `Daemon`. Presence detection,
-/// harness profiles, observability, and tick/stall/PM-wake timing stay on
-/// `Daemon` itself since those are genuinely shared across every project.
+/// harness profiles, observability, and tick/stall timing stay on `Daemon`
+/// itself since those are genuinely shared across every project.
 struct ProjectRuntime {
-    /// This project's key into `DaemonState.runs`/`last_pm_wake`.
+    /// This project's key into `DaemonState.runs`.
     project_id: ProjectId,
     tracker: Box<dyn TrackerAdapter>,
     workdir: PathBuf,
     base_branch: String,
     verify_cmd: Option<String>,
     runs: Mutex<HashMap<String, WorkerRun>>,
-    last_pm_wake: Mutex<Option<chrono::DateTime<Utc>>>,
 }
 
 impl ProjectRuntime {
@@ -109,7 +109,6 @@ impl ProjectRuntime {
         loaded: &DaemonState,
     ) -> Self {
         let runs = loaded.runs.get(&project_id).cloned().unwrap_or_default();
-        let last_pm_wake = loaded.last_pm_wake.get(&project_id).copied();
         Self {
             project_id,
             tracker,
@@ -117,7 +116,6 @@ impl ProjectRuntime {
             base_branch,
             verify_cmd,
             runs: Mutex::new(runs),
-            last_pm_wake: Mutex::new(last_pm_wake),
         }
     }
 }
@@ -213,7 +211,6 @@ impl Daemon {
             presence_sources,
             presence_cfg: PresenceConfig {
                 idle_threshold_minutes: config.presence.idle_threshold_minutes,
-                proposal_cap_per_wake: config.presence.proposal_cap_per_wake,
                 override_path: Some(override_path.clone()),
             },
             audit_log: AuditLog::new(AuditLog::default_path_from_override(&override_path)),
@@ -221,7 +218,6 @@ impl Daemon {
             worktree_root: config.daemon.worktree_root.clone(),
             tick_interval: Duration::from_secs(config.daemon.tick_interval_secs),
             stall_timeout: Duration::from_secs(config.daemon.stall_timeout_secs),
-            pm_wake_interval: Duration::from_secs(config.daemon.pm_wake_interval_mins * 60),
             last_mode: Mutex::new(loaded.last_mode),
             state_path,
             projects,
@@ -236,19 +232,14 @@ impl Daemon {
     /// can't be written.
     fn save_state(&self) -> anyhow::Result<()> {
         let mut runs = HashMap::new();
-        let mut last_pm_wake = HashMap::new();
         for project in &self.projects {
             runs.insert(
                 project.project_id.clone(),
                 project.runs.lock().unwrap().clone(),
             );
-            if let Some(t) = *project.last_pm_wake.lock().unwrap() {
-                last_pm_wake.insert(project.project_id.clone(), t);
-            }
         }
         let state = DaemonState {
             runs,
-            last_pm_wake,
             last_mode: *self.last_mode.lock().unwrap(),
         };
         state.save(&self.state_path)
@@ -287,21 +278,13 @@ impl Daemon {
     /// One reconciliation pass across every configured project: for each,
     /// reconcile any `NeedsReview` issues against their PR's merge status and
     /// dispatch any newly-approved issues — then resolve presence once, globally,
-    /// and if autonomous, run a PM wake per project for any whose interval has
-    /// elapsed.
+    /// purely for the audit log (see module doc).
     ///
     /// Projects are walked fully sequentially (see module doc) and a given
     /// project's reconcile/dispatch failure is logged and does not stop the
     /// remaining projects from getting their tick's work done; the first such
-    /// error is still returned once every project (and presence/PM-wake) has
-    /// been handled, so `run_foreground`'s caller-level log still fires.
-    ///
-    /// Presence only gates `maybe_wake_pm` — the PM proactively investigating and
-    /// filing *new* proposals unsupervised. It does not gate dispatching an
-    /// already-`Approved` issue: a human already reviewed and approved that
-    /// specific ticket, so running it isn't unsupervised action the same way a PM
-    /// wake is. See docs/wiki/architecture/presence-detection.md § What presence
-    /// gates.
+    /// error is still returned once every project has been handled, so
+    /// `run_foreground`'s caller-level log still fires.
     async fn tick(&self) -> anyhow::Result<()> {
         let mut first_err = None;
         for project in &self.projects {
@@ -320,12 +303,6 @@ impl Daemon {
 
         let previous = self.last_mode.lock().unwrap().replace(mode);
         self.audit_log.record(previous, mode)?;
-
-        if mode == PresenceMode::Autonomous {
-            for project in &self.projects {
-                self.maybe_wake_pm(project).await?;
-            }
-        }
 
         first_err.map_or(Ok(()), Err)
     }
@@ -431,57 +408,6 @@ impl Daemon {
         println!("{issue_id} finished: {:?}", run.phase);
 
         project.runs.lock().unwrap().insert(issue_id, run);
-        Ok(())
-    }
-
-    async fn maybe_wake_pm(&self, project: &ProjectRuntime) -> anyhow::Result<()> {
-        let due = {
-            let last = *project.last_pm_wake.lock().unwrap();
-            last.is_none_or(|t| {
-                Utc::now()
-                    .signed_duration_since(t)
-                    .to_std()
-                    .unwrap_or_default()
-                    >= self.pm_wake_interval
-            })
-        };
-        if !due {
-            return Ok(());
-        }
-
-        println!("PM wake cycle starting for {}", project.project_id);
-        // Record the attempt *before* the dispatch, regardless of outcome — a
-        // failing wake must still back off for a full `pm_wake_interval`, or it
-        // retries every tick forever. This is exactly the retry-storm pattern
-        // flagged as the single most common real-world failure mode across every
-        // system surveyed (docs/wiki/research/practitioner-reality.md); a PM wake
-        // failure is logged and swallowed here rather than propagated as a fatal
-        // tick error, since approved-issue dispatch above already succeeded and
-        // shouldn't be treated as failed just because the PM step also ran.
-        *project.last_pm_wake.lock().unwrap() = Some(Utc::now());
-
-        match pm::wake(
-            project.tracker.as_ref(),
-            &self.profiles,
-            &self.observability,
-            &project.workdir,
-            PM_GOAL,
-            self.presence_cfg.proposal_cap_per_wake,
-            self.stall_timeout,
-            false,
-        )
-        .await
-        {
-            Ok(outcome) => println!(
-                "PM wake filed {} proposal(s), skipped {} as similar to existing issues",
-                outcome.filed.len(),
-                outcome.skipped_similar.len()
-            ),
-            Err(e) => eprintln!(
-                "PM wake failed (will retry after {:?}): {e}",
-                self.pm_wake_interval
-            ),
-        }
         Ok(())
     }
 
@@ -637,6 +563,7 @@ mod tests {
     use super::*;
     use crate::tracker::{Proposal, ReviewMode};
     use async_trait::async_trait;
+    use chrono::Utc;
     use std::sync::Mutex;
 
     #[derive(Default)]
@@ -679,9 +606,6 @@ mod tests {
                 anyhow::bail!("simulated dispatch query failure");
             }
             Ok(Vec::new())
-        }
-        async fn query_similar(&self, _title: &str) -> anyhow::Result<Vec<TrackerIssue>> {
-            unimplemented!("not exercised by these tests")
         }
         async fn attach_note(&self, issue_id: &str, body: &str) -> anyhow::Result<()> {
             self.notes
@@ -898,7 +822,6 @@ mod tests {
                 base_branch: "main".to_string(),
                 verify_cmd: None,
                 runs: Mutex::new(HashMap::new()),
-                last_pm_wake: Mutex::new(None),
             })
             .collect();
 
@@ -914,7 +837,6 @@ mod tests {
             presence_sources: PresenceSourceList::new(Vec::new()),
             presence_cfg: PresenceConfig {
                 idle_threshold_minutes: 20,
-                proposal_cap_per_wake: 3,
                 override_path: Some(override_path),
             },
             audit_log: AuditLog::new(
@@ -924,7 +846,6 @@ mod tests {
             worktree_root: std::env::temp_dir(),
             tick_interval: Duration::from_secs(60),
             stall_timeout: Duration::from_secs(5),
-            pm_wake_interval: Duration::from_secs(3600),
             last_mode: Mutex::new(None),
             state_path: std::env::temp_dir().join(format!("lucid-daemon-test-state-{unique}.json")),
             projects,
@@ -963,23 +884,6 @@ mod tests {
                 .unwrap()
                 .contains(&DecisionState::Approved)
         );
-    }
-
-    #[tokio::test]
-    async fn pm_wake_does_not_fire_during_an_active_tick() {
-        let daemon = test_daemon(
-            MockTracker::default(),
-            presence::override_file::OverrideMode::Active,
-            "pm-wake-gated",
-        );
-
-        daemon.tick().await.unwrap();
-
-        assert_eq!(
-            *daemon.last_mode.lock().unwrap(),
-            Some(PresenceMode::Active)
-        );
-        assert!(daemon.projects[0].last_pm_wake.lock().unwrap().is_none());
     }
 
     #[tokio::test]
@@ -1051,7 +955,6 @@ mod tests {
             presence_sources: PresenceSourceList::new(Vec::new()),
             presence_cfg: PresenceConfig {
                 idle_threshold_minutes: 20,
-                proposal_cap_per_wake: 3,
                 override_path: Some(override_path),
             },
             audit_log: AuditLog::new(
@@ -1062,7 +965,6 @@ mod tests {
             worktree_root: std::env::temp_dir(),
             tick_interval: Duration::from_secs(60),
             stall_timeout: Duration::from_secs(5),
-            pm_wake_interval: Duration::from_secs(3600),
             last_mode: Mutex::new(None),
             state_path,
             projects,
@@ -1109,7 +1011,6 @@ mod tests {
                     id_a.clone(),
                     sample_run(&id_a, crate::state::WorkerPhase::Succeeded),
                 )])),
-                last_pm_wake: Mutex::new(None),
             },
             ProjectRuntime {
                 project_id: "project-b".to_string(),
@@ -1121,7 +1022,6 @@ mod tests {
                     id_b.clone(),
                     sample_run(&id_b, crate::state::WorkerPhase::Failed),
                 )])),
-                last_pm_wake: Mutex::new(None),
             },
         ];
 

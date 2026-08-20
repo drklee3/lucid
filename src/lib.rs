@@ -6,7 +6,6 @@ pub mod config;
 pub mod daemon;
 pub mod harness;
 pub mod notify;
-pub mod pm;
 pub mod pr;
 pub mod presence;
 pub mod state;
