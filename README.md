@@ -1,24 +1,57 @@
 # lucid
 
-Named for lucid dreaming: it acts on its own, but stays directed within bounds you set — never fully unsupervised.
+Daemon that takes your human-approved tickets and turns them into dispatched, reviewed, merged PRs — continuously, unattended, running alongside whatever you're doing yourself. Named for lucid dreaming: it acts on its own, but stays directed within bounds you set, never fully unsupervised.
 
-Coding-agent systems stack into layers — model, harness, what a harness does with sub-agents inside one task, what strings tasks together into a project, and who decides a task should exist at all. Each layer swaps independently of the ones around it. lucid owns exactly one of them: it's the part that takes a queue of human-approved tickets and turns them into an ongoing stream of dispatched, reviewed, merged PRs — nothing above that (deciding what's worth building) and nothing below it (how any single task actually gets solved).
+## Which layer this is
 
-| Layer | What it is | Swappable via | lucid's relationship |
-|---|---|---|---|
-| Task origination | Deciding a ticket should exist | Human, or any external cron/agent, filing through the tracker | Can't tell them apart — doesn't try to |
-| **Inter-task orchestration** | **Sequencing many one-shot tasks into an ongoing project** | **lucid itself** | **Lives here** — queue → worktree → sandboxed dispatch → PR, one ticket at a time |
-| Intra-task composition | How one task actually gets solved inside a harness — one model, or a harness spawning its own sub-agents | The harness's own internal design | Invisible — one dispatch, one process, one diff back either way |
-| Agent harness | Bounded process: starts, does a task, exits | `HarnessProfile.cmd`/`args` (`claude`, `codex`, `hermes`, pi, ...) | Spawns it, sandboxes around it, never reaches inside it |
-| LLM API | The model | Whatever the harness calls | Never calls one directly — model-agnostic by construction |
+Coding-agent systems stack into layers, and each one swaps independently of the ones around it. lucid owns exactly one: turning a queue of approved tickets into an ongoing stream of dispatched, reconciled PRs. Nothing above that (deciding what's worth building) and nothing below it (how any single task actually gets solved).
 
-Concretely, that means:
+| Layer | What it is | lucid's relationship |
+|---|---|---|
+| Task origination | Deciding a ticket should exist | Out of scope — a human or an external cron/agent files it through the tracker; lucid can't tell them apart |
+| **Inter-task orchestration** | **Sequencing one-shot tasks into an ongoing project** | **Lives here** — queue → worktree → sandboxed dispatch → PR |
+| Intra-task composition | How one task gets solved inside a harness — one model, or a harness spawning its own sub-agents | Invisible — one dispatch, one process, one diff back |
+| Agent harness | A bounded process: starts, does a task, exits (`claude`, `codex`, `hermes`, pi, ...) | Spawned via `HarnessProfile.cmd`/`args`, sandboxed around, never reached into |
+| LLM API | The model | Never called directly — whatever the harness picked |
 
-- **Dispatches** approved tickets to a coding harness (`claude -p`, `codex exec`, ...) in an isolated git worktree, sandboxed by default — runs continuously, whether you're at the keyboard or not, since each ticket was already human-approved.
-- **Reconciles**: retries stalled runs, opens/merges PRs via `gh`, reports back.
-- Tracker-agnostic, harness-agnostic, model-agnostic by design.
+More on why this boundary is where it is: [`docs/wiki/architecture/overview.md`](docs/wiki/architecture/overview.md).
 
-See [`docs/wiki/index.md`](docs/wiki/index.md) for full architecture and resolved decisions, and [`docs/FEATURES.md`](docs/FEATURES.md) for what's built vs. still open.
+## Quickstart
+
+Requires `git` and an authenticated [`gh`](https://cli.github.com/) on `PATH` — every dispatch pushes a branch and opens/merges its PR through `gh`.
+
+```bash
+cargo build --release
+export PATH="$PWD/target/release:$PATH"
+```
+
+Write a `lucid.toml` (file-backed tracker, no credentials needed to try it out):
+
+```toml
+[[harness_profiles]]
+name = "claude-subscription"
+kind = "ClaudeCode"
+cmd = "claude"
+args = ["-p"]
+auth_mode = "Subscription"
+priority = 1
+
+[tracker]
+backend = "file"
+file_path = "state/tracker.json"
+
+[presence]
+idle_threshold_minutes = 20
+```
+
+Then:
+
+```bash
+lucid config validate
+lucid start --foreground
+```
+
+Every field, every default: [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md). Every command: [`docs/CLI.md`](docs/CLI.md).
 
 ## How it fits together
 
@@ -56,60 +89,11 @@ flowchart TB
     class tracker,harness,github,otel,external ext;
 ```
 
-One small standalone process, no framework. Two other things worth knowing at a glance:
+Every backend above — tracker, presence source, harness execution, notifications — is a trait with a config-selected implementation, and any of them can be a plain script instead of compiled Rust: drop an executable in `.lucid/notify/on_needs_review` and that's a complete Discord/Slack/anything integration, no change to lucid itself. Ready-to-copy examples: [`docs/notify-scripts/`](docs/notify-scripts/). Design: [`docs/wiki/architecture/extensibility-primitives.md`](docs/wiki/architecture/extensibility-primitives.md).
 
-**Every backend is swappable** — same shape everywhere, a trait with a config-selected implementation:
+## Docs
 
-| Backend | Built-in options |
-|---|---|
-| Tracker | Linear, local file |
-| Presence source | logind (dead on WSL2), manual override |
-| Harness execution | Sandboxed (Docker), Local |
-| Notifications | none (default), script |
-
-**Any of those can be a plain script instead of Rust**, not just a compiled-in option — drop an executable in `.lucid/notify/on_needs_review` and it's a complete Discord/Slack/anything integration, no code change to lucid itself. Ready-to-copy examples: [`docs/notify-scripts/`](docs/notify-scripts/). Design details: [extensibility primitives](docs/wiki/architecture/extensibility-primitives.md).
-
-Full breakdown: [`docs/wiki/architecture/overview.md`](docs/wiki/architecture/overview.md) for the component categories, [`docs/FEATURES.md`](docs/FEATURES.md) for built-vs-open.
-
-## Quickstart
-
-Requires `git` and an authenticated [`gh`](https://cli.github.com/) on `PATH` — every dispatch pushes a branch and opens/merges its PR through `gh`.
-
-```bash
-cargo build --release
-export PATH="$PWD/target/release:$PATH"
-
-# write lucid.toml — see Configuration below for what goes in it
-docker compose up -d          # optional: Arize Phoenix, for trace correlation
-lucid config validate
-lucid start --foreground
-```
-
-Full command reference: [`docs/CLI.md`](docs/CLI.md).
-
-## Configuration
-
-`lucid` reads a single TOML file (`./lucid.toml` by default). Minimal working example, file-backed tracker, no credentials needed:
-
-```toml
-[[harness_profiles]]
-name = "claude-subscription"
-kind = "ClaudeCode"
-cmd = "claude"
-args = ["-p"]
-auth_mode = "Subscription"
-priority = 1
-
-[tracker]
-backend = "file"
-file_path = "state/tracker.json"
-
-[presence]
-idle_threshold_minutes = 20
-
-[observability]
-otlp_endpoint = "http://localhost:4317"
-trace_ui_base_url = "http://localhost:6006"
-```
-
-Full field reference (every section, every default): [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md).
+- [`docs/CLI.md`](docs/CLI.md) — every command
+- [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) — every `lucid.toml` field and default
+- [`docs/FEATURES.md`](docs/FEATURES.md) — what's built vs. still open
+- [`docs/wiki/index.md`](docs/wiki/index.md) — architecture decisions and the reasoning behind them, not required reading to use lucid
